@@ -587,6 +587,8 @@ var CSS = `
 .wavep-status { display:flex; justify-content:space-between; gap:12px;
   font-size:11px; color:#8a9099; font-variant-numeric:tabular-nums; }
 .theme-dark .wavep-status { color:#7c828c; }
+.wavep-dot { cursor:pointer; }
+.wavep-color-input { position:absolute; width:0; height:0; opacity:0; pointer-events:none; }
 .wavep-empty { font-size:12px; color:#9ca3af; }
 `;
 var ensureStyle = () => {
@@ -636,6 +638,7 @@ var mountWave = (el, ctx) => {
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
+      <input type="color" class="wavep-color-input" />
     </div>`;
   const root = el.querySelector(".wavep");
   const canvas = el.querySelector(".wavep-canvas");
@@ -658,6 +661,21 @@ var mountWave = (el, ctx) => {
   };
   const engine = new WaveEngine();
   engine.setProtocol({ id: "nnwave", name: "NN-Wave", createParser: () => createNnWaveParser() });
+  const colorOverrides = {};
+  let pendingColorIndex = -1;
+  const colorInput = el.querySelector(".wavep-color-input");
+  const buildColors = () => {
+    const base = ctx.themeColors();
+    const entries = Object.entries(colorOverrides);
+    if (entries.length === 0) return base;
+    const n = Math.max(base.palette.length, engine.channels.length);
+    const palette = Array.from({ length: n }, (_, i) => base.palette[i % base.palette.length]);
+    for (const [k, v] of entries) {
+      const idx = Number(k);
+      if (Number.isInteger(idx) && idx >= 0 && idx < n) palette[idx] = v;
+    }
+    return { ...base, palette };
+  };
   const unsubs = [];
   unsubs.push(ctx.onRawData((e) => engine.handleRaw(e)));
   if (ctx.onSessionsChange) unsubs.push(ctx.onSessionsChange(() => renderSessions()));
@@ -855,8 +873,7 @@ var mountWave = (el, ctx) => {
     markDirty();
   });
   const renderLegend = () => {
-    const colors = ctx.themeColors();
-    const palette = colors.palette;
+    const palette = buildColors().palette;
     const va = view.cursorA !== null ? engine.nearestIndex(view.cursorA) : -1;
     const vb = view.cursorB !== null ? engine.nearestIndex(view.cursorB) : -1;
     if (engine.channels.length === 0) {
@@ -870,7 +887,7 @@ var mountWave = (el, ctx) => {
       const delta = view.cursorA !== null && view.cursorB !== null ? fmtValue(vbV - vaV) : null;
       const color = palette[i % palette.length];
       return `<span class="wavep-chip${engine.visible[i] !== false ? "" : " off"}" data-index="${i}" title="点击${engine.visible[i] !== false ? "隐藏" : "显示"}">
-          <i style="background:${color}"></i>
+          <i class="wavep-dot" style="background:${color}"></i>
           <span class="wavep-chip-name">${esc(engine.names[i] ?? `CH${i + 1}`)}</span>
           <span class="wavep-chip-val">${fmtValue(value)}</span>
           ${delta ? `<span class="wavep-chip-delta">Δ ${delta}</span>` : ""}
@@ -878,11 +895,41 @@ var mountWave = (el, ctx) => {
     }).join("");
   };
   legendEl.addEventListener("click", (e) => {
-    const chip = e.target.closest(".wavep-chip");
+    const target = e.target;
+    const chip = target.closest(".wavep-chip");
     if (!chip) return;
     const index = Number(chip.dataset.index);
+    if (target.closest(".wavep-dot")) {
+      pendingColorIndex = index;
+      colorInput.value = buildColors().palette[index % buildColors().palette.length];
+      colorInput.click();
+      return;
+    }
     engine.visible[index] = !(engine.visible[index] !== false);
     markDirty();
+  });
+  legendEl.addEventListener("dblclick", (e) => {
+    const target = e.target;
+    const chip = target.closest(".wavep-chip");
+    if (!chip || !target.closest(".wavep-dot")) return;
+    const index = Number(chip.dataset.index);
+    if (colorOverrides[index]) {
+      delete colorOverrides[index];
+      persist();
+      markDirty();
+      renderLegend();
+    }
+  });
+  colorInput.addEventListener("change", () => {
+    if (pendingColorIndex < 0) return;
+    const v = colorInput.value;
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+      colorOverrides[pendingColorIndex] = v;
+      persist();
+      markDirty();
+      renderLegend();
+    }
+    pendingColorIndex = -1;
   });
   const renderStatus = () => {
     const s = engine.stats;
@@ -918,7 +965,7 @@ var mountWave = (el, ctx) => {
     if (engine.version !== lastDrawnVersion || viewDirty) {
       lastDrawnVersion = engine.version;
       viewDirty = false;
-      geom = drawWave(canvas, engine, view, ctx.themeColors());
+      geom = drawWave(canvas, engine, view, buildColors());
     }
   };
   const loop = (now) => {
@@ -937,11 +984,20 @@ var mountWave = (el, ctx) => {
   };
   const restore = () => {
     try {
-      const saved = ctx.storage.get("wave-view", null);
+      const saved = ctx.storage.get(
+        "wave-view",
+        null
+      );
       if (!saved) return;
       if (typeof saved.overlay === "boolean") view.overlay = saved.overlay;
       if (typeof saved.windowMs === "number")
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
+      if (saved.colors && typeof saved.colors === "object") {
+        for (const [k, v] of Object.entries(saved.colors)) {
+          const idx = Number(k);
+          if (Number.isInteger(idx) && idx >= 0 && /^#[0-9a-fA-F]{6}$/.test(String(v))) colorOverrides[idx] = String(v);
+        }
+      }
       updateButtons();
     } catch {
     }
@@ -951,14 +1007,17 @@ var mountWave = (el, ctx) => {
   resizeObserver.observe(wrap);
   rafId = requestAnimationFrame(loop);
   markDirty();
+  const persist = () => {
+    try {
+      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, colors: { ...colorOverrides } });
+    } catch {
+    }
+  };
   return () => {
     cancelAnimationFrame(rafId);
     resizeObserver?.disconnect();
     unsubs.forEach((fn) => fn());
-    try {
-      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs });
-    } catch {
-    }
+    persist();
   };
 };
 export {
