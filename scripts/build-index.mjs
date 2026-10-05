@@ -1,7 +1,10 @@
 // 市场索引生成 / 校验脚本（零依赖，Node 18+）。
-//   node scripts/build-index.mjs --check   仅校验 plugins/*/plugin.json（PR 用，失败退出码 1）
-//   node scripts/build-index.mjs           校验 + 读取 packages/*.zip 计算哈希 → 重写 index.json
-// 下载地址固定用 jsDelivr @main（CI 在每次合并后重打包并刷新哈希，索引与内容始终同步）。
+//   node scripts/build-index.mjs --check            仅校验 plugins/*/plugin.json（PR 用，失败退出码 1）
+//   node scripts/build-index.mjs                    校验 + 读取 packages/*.zip 计算哈希 → 重写 index.json
+//   node scripts/build-index.mjs --commit <sha>     下载地址钉住到该提交（不可变 URL）
+// 下载地址默认钉 commit：zip 走 @<sha> 不可变 URL，jsDelivr 缓存永远不会造成
+// 索引哈希与下载字节不一致（SHA256 校验失败的历史根因就是 @main 可变缓存）；
+// 仅显式传 --ref main 时退回分支 URL（本地预览用）。
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -11,7 +14,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pluginsDir = join(root, 'plugins');
 const packagesDir = join(root, 'packages');
 const indexPath = join(root, 'index.json');
-const CDN = (id, ver) => `https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/${id}-${ver}.zip`;
+const argv = process.argv.slice(2);
+const commitIdx = argv.indexOf('--commit');
+const pinSha = commitIdx >= 0 ? argv[commitIdx + 1] : undefined;
+const REF = pinSha && /^[0-9a-f]{7,40}$/.test(pinSha) ? pinSha : 'main';
+const CDN = (id, ver) => `https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@${REF}/packages/${id}-${ver}.zip`;
 
 const errors = [];
 const entries = [];

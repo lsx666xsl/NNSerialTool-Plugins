@@ -6,7 +6,8 @@
   "description": "NNSerialTool 插件仓库：插件源码 + 市场索引 + 打包 CI",
   "scripts": {
     "build": "node scripts/build-plugins.mjs",
-    "check": "node scripts/build-index.mjs --check"
+    "check": "node scripts/build-index.mjs --check",
+    "test:wave": "node scripts/wave-headless-test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

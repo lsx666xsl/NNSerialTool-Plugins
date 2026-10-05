@@ -24,11 +24,16 @@ jobs:
           npm install --no-fund --no-audit
           npm run build
 
+      # 无头深度测试：真实打包波形引擎/渲染器/解析器后驱动（23 项断言）
+      - name: Headless wave test
+        run: node scripts/wave-headless-test.mjs
+
       # PR：仅校验清单与结构
       - name: Validate plugins
         run: node scripts/build-index.mjs --check
 
-      # 合并 main：打包 → 重算索引 → 机器人提交回仓库
+      # 合并 main：打包（同版本 zip 一经发布永不重打——不可变性是
+      # "jsDelivr 缓存字节 == 仓库字节 == 索引哈希"三方可校验一致的前提）
       - name: Package plugins
         if: github.event_name == 'push'
         run: |
@@ -36,7 +41,9 @@ jobs:
           for d in plugins/*/; do
             id=$(basename "$d")
             ver=$(node -p "require('./$d/plugin.json').version")
-            (cd "$d" && zip -qr "$GITHUB_WORKSPACE/packages/$id-$ver.zip" .)
+            if [ ! -f "packages/$id-$ver.zip" ]; then
+              (cd "$d" && zip -qr "$GITHUB_WORKSPACE/packages/$id-$ver.zip" .)
+            fi
           done
 
       - name: Rebuild index
@@ -51,3 +58,17 @@ jobs:
           git add index.json packages plugins
           git commit -m "chore: rebuild market index" || echo "no changes"
           git push
+
+      # 第二阶段：把下载地址钉到刚推送的提交——zip 从此走 @<sha> 不可变 URL
+      - name: Pin index to commit
+        if: github.event_name == 'push'
+        run: |
+          SHA=$(git rev-parse HEAD)
+          node scripts/build-index.mjs --commit "$SHA"
+          git add index.json
+          if git diff --cached --quiet; then echo "index already pinned"; exit 0; fi
+          git commit -m "chore: pin market index to $SHA"
+          git push
+          # purge 索引自身（@main 可变 URL）：让应用立即拉到钉住后的新索引
+          curl -fsS "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/index.json" \
+            > /dev/null && echo "jsDelivr index purged" || echo "purge failed (non-fatal)"
