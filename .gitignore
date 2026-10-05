@@ -1,0 +1,5 @@
+# 注意：packages/ 与 index.json 必须入库——
+# 市场下载地址走 jsDelivr（从 git 提供文件），CI 机器人会把打包产物提交回来。
+.DS_Store
+Thumbs.db
+node_modules/

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NNSerialTool plugin.json",
+  "type": "object",
+  "required": ["id", "name", "version", "apiVersion", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "全局唯一插件 id，同时是安装目录名"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 32, "description": "展示名" },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "语义化版本 MAJOR.MINOR.PATCH"
+    },
+    "apiVersion": { "type": "integer", "const": 1, "description": "插件 API 版本，当前必须为 1" },
+    "type": { "type": "string", "enum": ["view", "protocol"] },
+    "entry": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,64}$",
+      "default": "main.js",
+      "description": "入口文件名（仅文件名，不带路径）"
+    },
+    "author": { "type": "string", "maxLength": 64 },
+    "description": { "type": "string", "maxLength": 200 },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["send", "storage"] },
+      "uniqueItems": true,
+      "default": []
+    },
+    "minAppVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "要求的最低应用版本"
+    }
+  }
+}

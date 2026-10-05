@@ -1,0 +1,11 @@
+{
+  "id": "hello-view",
+  "name": "Hello 示例视图",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "type": "view",
+  "entry": "main.js",
+  "author": "NNSerialTool",
+  "description": "最小可用的视图插件模板：展示会话列表与实时字节计数，演示主题继承与数据订阅",
+  "permissions": []
+}

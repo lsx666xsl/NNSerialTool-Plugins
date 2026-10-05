@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 依赖 + 插件构建（带 src/ 的插件经 esbuild 打包出 main.js）
+      - name: Install & build plugins
+        run: |
+          npm install --no-fund --no-audit
+          npm run build
+
+      # PR：仅校验清单与结构
+      - name: Validate plugins
+        run: node scripts/build-index.mjs --check
+
+      # 合并 main：打包 → 重算索引 → 机器人提交回仓库
+      - name: Package plugins
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p packages
+          for d in plugins/*/; do
+            id=$(basename "$d")
+            ver=$(node -p "require('./$d/plugin.json').version")
+            (cd "$d" && zip -qr "$GITHUB_WORKSPACE/packages/$id-$ver.zip" .)
+          done
+
+      - name: Rebuild index
+        if: github.event_name == 'push'
+        run: node scripts/build-index.mjs
+
+      - name: Commit index & packages
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.json packages plugins
+          git commit -m "chore: rebuild market index" || echo "no changes"
+          git push

@@ -1,0 +1,15 @@
+{
+  "name": "nnserialtool-plugins",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "NNSerialTool 插件仓库：插件源码 + 市场索引 + 打包 CI",
+  "scripts": {
+    "build": "node scripts/build-plugins.mjs",
+    "check": "node scripts/build-index.mjs --check"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "fflate": "^0.8.3"
+  }
+}
