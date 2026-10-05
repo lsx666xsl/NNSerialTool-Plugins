@@ -19,7 +19,7 @@
 
 ---
 
-## 一、五分钟上手
+## 一、上手指南
 
 1. 复制 `plugins/hello-view/` 为 `plugins/<你的插件id>/`；
 2. 改 `plugin.json` 的 id / name / version / description；
@@ -198,7 +198,7 @@ export default function activate(ctx) {
 - **版本升级 = 改 plugin.json 的 version + 提 PR**；同版本改动不会被市场识别为更新；
 - 删除插件 = 删 `plugins/<id>/` 目录（CI 会从索引移除）。
 
-## 七、兼容性承诺
+## 七、兼容性
 
 - `apiVersion` 只在破坏性变更时递增；应用升级尽量只追加 API 方法；
 - 插件加载时被隔离在 try/catch 中——抛错只影响该插件自身（界面提示加载失败），
