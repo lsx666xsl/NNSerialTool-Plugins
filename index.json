@@ -1,6 +1,6 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-10-05T12:12:31.429Z",
+  "updatedAt": "2026-10-05T12:14:40.144Z",
   "plugins": [
     {
       "id": "hello-view",
@@ -10,8 +10,8 @@
       "description": "最小可用的视图插件模板：展示会话列表与实时字节计数，演示主题继承与数据订阅",
       "author": "NNSerialTool",
       "apiVersion": 1,
-      "size": 1476,
-      "sha256": "1778703e4cd495d7e38dc82876240bdf2252c590284e12658e9387492cb01503",
+      "size": 1573,
+      "sha256": "61ea725534573bcf24e3dfc9f3761f08c5a5a7e21a068c9adfb875bab3d03569",
       "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/hello-view-1.0.0.zip"
     },
     {
