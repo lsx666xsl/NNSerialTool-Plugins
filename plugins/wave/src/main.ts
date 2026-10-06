@@ -259,7 +259,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         return;
       }
       const dir = await ctx.exportTextFiles('选择协议文件导出目录', FIRMWARE_FILES, 'NN-Wave协议文件');
-      if (dir) ctx.notify(`协议文件已导出到 ${dir}\NN-Wave协议文件`);
+      if (dir) ctx.notify(`协议文件已导出到 ${dir} 的 NN-Wave协议文件 子目录`);
     })();
   };
 
@@ -276,12 +276,12 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       }
       const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
       const dir = await ctx.exportTextFiles('选择SVG导出目录', [{ name: `wave-${stamp}.svg`, text: svg }], 'NN-Wave波形快照');
-      if (dir) ctx.notify(`波形 SVG 已导出到 ${dir}\NN-Wave波形快照`);
+      if (dir) ctx.notify(`波形 SVG 已导出到 ${dir} 的 NN-Wave波形快照 子目录`);
     })();
   };
 
-  const btnSvg = el.querySelector('.wavep-export-svg') as HTMLButtonElement;
-  btnSvg.addEventListener('click', exportSvg);
+  btnSvgExport.addEventListener('click', exportSvg);
+  btnExport.addEventListener('click', exportProtocol);
 
   // ---------- 交互换算 ----------
   const pointerPos = (e: PointerEvent | WheelEvent | MouseEvent): { x: number; y: number } => {
