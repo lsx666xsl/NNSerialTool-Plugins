@@ -189,10 +189,13 @@ export const drawWave = (
       g.lineCap = 'round';
 
       if (view.style === 'bars') {
-        // 像素列 min/max 抽稀竖条
+        // 像素列 min/max 抽稀竖条；超大缓冲时限入（每帧每通道 ≤60 万次采样访问，
+        // 以步长抽采近似峰谷——该密度下极值差异在 1px 内，视觉无损）
+        const visible = i1 - i0;
+        const stride = visible > 600_000 ? Math.ceil(visible / 600_000) : 1;
         const mins = new Float32Array(cols).fill(Infinity);
         const maxs = new Float32Array(cols).fill(-Infinity);
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
           const x = ((t - t0) / view.windowMs) * cols;

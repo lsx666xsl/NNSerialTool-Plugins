@@ -2,7 +2,7 @@
 // 数据到达只写缓冲（version 自增），渲染循环对比 version 决定是否重绘。
 import type { ParserInstance, ProtocolDef, RawDataEvent, WaveFrame } from './types';
 
-export const RING_CAPACITY = 200_000; // 每通道点位上限（约 30 分钟 @100Hz），超出丢最旧
+export const RING_CAPACITY = 2_000_000; // 每通道点位上限（约 5.5 小时 @100Hz / 33 分钟 @1kHz），超出丢最旧；3 通道满配约 40MB
 
 // 定容环形缓冲：逻辑序 0..count-1 即时间升序
 export class Ring {

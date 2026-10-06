@@ -75,7 +75,7 @@ var createNnWaveParser = () => {
 };
 
 // plugins/wave/src/engine.ts
-var RING_CAPACITY = 2e5;
+var RING_CAPACITY = 2e6;
 var Ring = class {
   constructor(capacity, ctor) {
     this.capacity = capacity;
@@ -330,9 +330,11 @@ var drawWave = (canvas, engine, view, colors) => {
       g.lineJoin = "round";
       g.lineCap = "round";
       if (view.style === "bars") {
+        const visible = i1 - i0;
+        const stride = visible > 6e5 ? Math.ceil(visible / 6e5) : 1;
         const mins = new Float32Array(cols).fill(Infinity);
         const maxs = new Float32Array(cols).fill(-Infinity);
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
           const x = (t - t0) / view.windowMs * cols;
