@@ -113,7 +113,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
         <button type="button" class="wavep-btn wavep-clear">清空</button>
-        <button type="button" class="wavep-btn wavep-export">导出固件文件</button>
+        <button type="button" class="wavep-btn wavep-export">导出协议文件</button>
       </div>
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
@@ -242,8 +242,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         ctx.notify('当前应用版本过旧，不支持固件文件导出');
         return;
       }
-      const dir = await ctx.exportTextFiles('选择固件协议文件导出目录', FIRMWARE_FILES);
-      if (dir) ctx.notify(`固件协议文件已导出到 ${dir}`);
+      const dir = await ctx.exportTextFiles('选择协议文件导出目录', FIRMWARE_FILES, 'NN-Wave协议文件');
+      if (dir) ctx.notify(`协议文件已导出到 ${dir}\NN-Wave协议文件`);
     })();
   });
 

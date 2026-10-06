@@ -1,6 +1,6 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-10-05T12:52:12.986Z",
+  "updatedAt": "2026-10-06T09:28:41.822Z",
   "plugins": [
     {
       "id": "hello-view",
@@ -10,22 +10,22 @@
       "description": "最小可用的视图插件模板：展示会话列表与实时字节计数，演示主题继承与数据订阅",
       "author": "NNSerialTool",
       "apiVersion": 1,
-      "size": 1573,
-      "sha256": "cca50a2583c35e60eb2a08f8a63fbeb09f709c7bbe1671e41a48ccdd779f4ee1",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@e74103a8c64b8c3d029c52e4b2f7851e9de6fff9/packages/hello-view-1.0.0.zip"
+      "size": 1476,
+      "sha256": "1457faf9aac26d1ec829e8fbb49a254a5fd19afe3c87f9f4f256a8bac9bbe6cf",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/hello-view-1.0.0.zip"
     },
     {
       "id": "wave",
       "name": "波形",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "type": "view",
       "description": "串口/网络数据的实时波形显示（NN-Wave 协议，独立更新版）",
       "author": "NNSerialTool",
       "apiVersion": 1,
       "minAppVersion": "0.5.2",
-      "size": 30198,
-      "sha256": "9f33fac300c95cbce88f5a7749f8d74ae8d37fbdc3d1b641ec29d57c8c65eb81",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@e74103a8c64b8c3d029c52e4b2f7851e9de6fff9/packages/wave-1.1.0.zip"
+      "size": 12492,
+      "sha256": "8cd53884be6154520bb97744a2748e9214324524ced6d2db0c569ac7756770a0",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/wave-1.2.0.zip"
     }
   ]
 }

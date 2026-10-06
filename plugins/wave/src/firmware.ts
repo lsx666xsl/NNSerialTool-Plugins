@@ -102,38 +102,46 @@ int nnwave_send_names(nnwave_t *h, const char *const *names, uint8_t count) {
 `,
   },
   {
-    name: '固件接入说明.txt',
-    text: `NN-Wave 固件接入说明
-====================
+    name: 'README.md',
+    text: `# NN-Wave 固件接入说明
 
-1. 把 nnwave.c / nnwave.h 加入你的固件工程；
+## 1. 加入工程
 
-2. 实现一个发送回调（以 STM32 HAL 为例）：
+把 \`nnwave.c\` / \`nnwave.h\` 加入你的固件工程；
 
-   static int uart_write(const uint8_t *d, size_t n) {
-       return HAL_UART_Transmit(&huart1, (uint8_t *)d, (uint16_t)n, 20) == HAL_OK ? 0 : -1;
-   }
+## 2. 实现发送回调（以 STM32 HAL 为例）
 
-3. 初始化并周期性发送：
+\`\`\`c
+static int uart_write(const uint8_t *d, size_t n) {
+    return HAL_UART_Transmit(&huart1, (uint8_t *)d, (uint16_t)n, 20) == HAL_OK ? 0 : -1;
+}
+\`\`\`
 
-   nnwave_t nnw;
-   float ch[3] = {0};
+## 3. 初始化并周期性发送
 
-   nnwave_init(&nnw, uart_write);
-   const char *names[3] = {"温度", "湿度", "电流"};
-   nnwave_send_names(&nnw, names, 3);   // 可选：上电发一次通道名
+\`\`\`c
+nnwave_t nnw;
+float ch[3] = {0};
 
-   while (1) {
-       ch[0] = read_temp();  ch[1] = read_humi();  ch[2] = read_current();
-       nnwave_send(&nnw, ch, 3);
-       HAL_Delay(10);       // 100 Hz 刷新
-   }
+nnwave_init(&nnw, uart_write);
+const char *names[3] = {"温度", "湿度", "电流"};
+nnwave_send_names(&nnw, names, 3);   /* 可选：上电发一次通道名 */
 
-4. 上位机：NNSerialTool 波形插件 → 数据源选对应会话。
+while (1) {
+    ch[0] = read_temp();  ch[1] = read_humi();  ch[2] = read_current();
+    nnwave_send(&nnw, ch, 3);
+    HAL_Delay(10);       /* 100 Hz 刷新 */
+}
+\`\`\`
 
-带宽参考：帧长 = 6 + 4×通道数 字节。
+## 4. 上位机
+
+NNSerialTool 波形插件 → 数据源选对应会话。
+
+## 带宽参考
+
+帧长 = 6 + 4×通道数 字节。
 8 通道 @100Hz ≈ 3.3 KB/s，9600 波特率即可跑；1 通道 @1kHz ≈ 10 KB/s。
-大端核（极少见）需在 nnwave_send 里逐字节装填 float。
-`,
+大端核（极少见）需在 \`nnwave_send\` 里逐字节装填 float。`,
   },
 ];
