@@ -127,7 +127,7 @@ const testColors = () => ({
   accent: '#00f',
   palette: ['#f00', '#0f0', '#00f'],
 });
-const channelPaths = () => calls.paths.filter((p) => p.length > 50); // 长路径=通道折线，短路径=网格刻度
+const channelPaths = () => calls.paths.filter((p) => p.length > 20); // 长路径=通道折线，短路径=网格刻度
 const pathExtentY = (p) => {
   let lo = Infinity;
   let hi = -Infinity;

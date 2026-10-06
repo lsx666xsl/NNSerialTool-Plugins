@@ -1,0 +1,30 @@
+
+[1] 波形显示
+  PASS  三通道全部入缓冲  (count=1000)
+  PASS  无丢帧无解析错误  ({"frames":1000,"bytes":18000,"drops":0,"errors":0})
+  PASS  drawWave 产出三条通道折线  (paths=3)
+  PASS  几何返回时间窗=默认 10s  (10000ms)
+
+[2] 断包重组 + 坏帧容错 + 丢帧统计
+  PASS  随机断包后仍完整重组  (count=1000)
+  PASS  断包零丢帧  ({"frames":1000,"bytes":18000,"drops":0,"errors":0})
+  PASS  seq 跳变计入丢帧  (drops=3)
+  PASS  坏 CRC 丢弃、好帧照收
+  PASS  回绕缺口计入丢帧统计  (drops=24)
+
+[3] 时间窗缩放
+  PASS  缩到 2s 窗口几何正确
+  PASS  放到 20s 窗口几何正确
+  PASS  窗口越大折线越密  (dense=101 sparse=1000)
+
+[4] 左右滚动（平移窗口看不同段）
+  PASS  平移后 t0 对齐数据起点  (t0=0.0)
+file:///F:/Project/Tauri/NNSerialTool-Plugins/scripts/wave-headless-test.mjs:140
+const pathMeanY = (p) => p.reduce((s, [, y]) => s + y, 0) / p.length;
+                           ^
+
+TypeError: Cannot read properties of undefined (reading 'reduce')
+    at pathMeanY (file:///F:/Project/Tauri/NNSerialTool-Plugins/scripts/wave-headless-test.mjs:140:28)
+    at file:///F:/Project/Tauri/NNSerialTool-Plugins/scripts/wave-headless-test.mjs:203:20
+
+Node.js v26.1.0
