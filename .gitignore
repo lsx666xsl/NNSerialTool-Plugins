@@ -5,3 +5,4 @@ Thumbs.db
 node_modules/
 .tmp-wave-headless/
 .tmp-svg/
+*.log
