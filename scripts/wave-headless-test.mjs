@@ -56,6 +56,7 @@ const ctx2d = {
   },
   moveTo: (x, y) => currentPath && currentPath.push([x, y]),
   lineTo: (x, y) => currentPath && currentPath.push([x, y]),
+  quadraticCurveTo: (cx, cy, x, y) => currentPath && currentPath.push([x, y]),
   stroke: () => {
     calls.paths.push(currentPath ?? []);
     currentPath = null;

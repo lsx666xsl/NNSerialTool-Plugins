@@ -368,31 +368,43 @@ var drawWave = (canvas, engine, view, colors) => {
         g.fillStyle = color;
         const total = i1 - i0;
         const stride = total > 8e3 ? Math.ceil(total / 8e3) : 1;
-        for (let i = i0; i < i1; i += stride) {
+        const denom = Math.max(1, total - 1);
+        let ord = 0;
+        for (let i = i0; i < i1; i++) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + (t - t0) / view.windowMs * plotW;
+          const x = plotLeft + ord / denom * plotW;
           const y = yOf(engine.channels[ch].at(i));
           g.fillRect(x - 1.5, y - 1.5, 3, 3);
+          ord++;
         }
       } else {
-        g.beginPath();
         g.strokeStyle = color;
         g.lineWidth = 1.6;
         const total = i1 - i0;
         const stride = total > 2e4 ? Math.ceil(total / 2e4) : 1;
-        let started = false;
-        for (let i = i0; i < i1; i += stride) {
+        const denom = Math.max(1, total - 1);
+        const pts = [];
+        let ord = 0;
+        for (let i = i0; i < i1; i++) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + (t - t0) / view.windowMs * plotW;
-          const y = yOf(engine.channels[ch].at(i));
-          if (!started) {
-            g.moveTo(x, y);
-            started = true;
-          } else {
-            g.lineTo(x, y);
+          const x = plotLeft + ord / denom * plotW;
+          pts.push([x, yOf(engine.channels[ch].at(i))]);
+          ord += stride;
+        }
+        g.beginPath();
+        if (pts.length === 1) {
+          g.fillStyle = color;
+          g.fillRect(pts[0][0] - 1.5, pts[0][1] - 1.5, 3, 3);
+        } else if (pts.length > 0) {
+          g.moveTo(pts[0][0], pts[0][1]);
+          for (let k = 1; k < pts.length - 1; k++) {
+            const mx = (pts[k][0] + pts[k + 1][0]) / 2;
+            const my = (pts[k][1] + pts[k + 1][1]) / 2;
+            g.quadraticCurveTo(pts[k][0], pts[k][1], mx, my);
           }
+          g.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
         }
         g.stroke();
       }
