@@ -231,6 +231,24 @@ console.log('\n[5] 自动量程 + 手动量程');
   check('清除手动量程恢复自动', Math.abs(pathExtentY(channelPaths()[0]) - auto) < 2);
 }
 
+console.log('\n[5b] 叠加模式共用并集量程');
+{
+  // 叠加：ch0 = sin ±1（全幅），ch2 = 0.5·sin2t（半幅）——共用并集量程后
+  // ch2 的绘制高度应约为 ch0 的一半（旧的逐通道归一化会给出 0.917 倍，此断言可判别）
+  view.overlay = true;
+  view.windowMs = 20000;
+  view.follow = true;
+  view.yRanges.clear();
+  calls.paths.length = 0;
+  geom = drawWave(canvas, engine, view, testColors());
+  const paneH = 500 - 8 - 22; // 叠加单栏占满绘图区
+  const paths = channelPaths();
+  const e0 = pathExtentY(paths[0]);
+  const e2 = pathExtentY(paths[2]);
+  check('叠加共用量程：半幅通道约为全幅一半', e2 > e0 * 0.35 && e2 < e0 * 0.6, `e0=${e0.toFixed(0)} e2=${e2.toFixed(0)} 比=${(e2 / e0).toFixed(2)}`);
+  view.overlay = false;
+}
+
 console.log('\n[6] 冻结 + 复位');
 {
   view.windowMs = 2000;
