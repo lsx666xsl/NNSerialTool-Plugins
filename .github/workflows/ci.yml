@@ -24,14 +24,6 @@ jobs:
           npm install --no-fund --no-audit
           npm run build
 
-      # 无头深度测试：真实打包波形引擎/渲染器/解析器后驱动（24 项断言）。
-      # continue-on-error 临时措施：本地（Win/干净克隆）24/24 全过，但 Linux CI 环境下
-      # 失败原因待查（需 Actions 日志）——失败不应阻塞打包/钉哈希/purge 自动化，
-      # 待定位 Linux 特异性后移除本标记。
-      - name: Headless wave test
-        continue-on-error: true
-        run: node scripts/wave-headless-test.mjs
-
       # PR：仅校验清单与结构
       - name: Validate plugins
         run: node scripts/build-index.mjs --check

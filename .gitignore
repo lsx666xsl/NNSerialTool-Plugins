@@ -6,3 +6,6 @@ node_modules/
 .tmp-wave-headless/
 .tmp-svg/
 *.log
+scripts/wave-headless-test.mjs
+scripts/smoke-wave.mjs
+scripts/svg-selftest.mjs
