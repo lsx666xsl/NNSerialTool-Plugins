@@ -15,7 +15,7 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 export const buildWaveSvg = (
   engine: WaveEngine,
-  opts: { overlay: boolean; yRanges: Map<number, YRange | null> },
+  opts: { overlay: boolean; yRanges: Map<number, YRange | null>; style?: 'line' | 'dots' | 'bars' },
   colors: ThemeColors
 ): string | null => {
   if (engine.t.count < 2) return null;
@@ -103,10 +103,33 @@ export const buildWaveSvg = (
       yTickLabels.push(fmtValue(v));
     }
 
-    // 折线：逐列 min/max 抽稀
+    // 折线/点/竖条：按视图样式输出（SVG 导出走全量数据，曲线模式抽稀到 ≤4000 点控制文件体积）
     for (const ch of pane.channels) {
       const color = colors.palette[ch % colors.palette.length];
       const yOf = (v: number) => pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
+      const style = opts.style ?? 'bars';
+      if (style === 'dots') {
+        const stride = Math.max(1, Math.ceil(engine.t.count / 8000));
+        for (let i = 0; i < engine.t.count; i += stride) {
+          const x = (plotLeft + ((engine.t.at(i) - t0) / span) * plotW).toFixed(1);
+          const y = yOf(engine.channels[ch].at(i)).toFixed(1);
+          parts.push(`<rect x="${+x - 1.5}" y="${+y - 1.5}" width="3" height="3" fill="${color}"/>`);
+        }
+        continue;
+      }
+      if (style === 'line') {
+        const stride = Math.max(1, Math.ceil(engine.t.count / 4000));
+        const segs: string[] = [];
+        let started = false;
+        for (let i = 0; i < engine.t.count; i += stride) {
+          const x = (plotLeft + ((engine.t.at(i) - t0) / span) * plotW).toFixed(1);
+          const y = yOf(engine.channels[ch].at(i)).toFixed(1);
+          segs.push(`${started ? 'L' : 'M'}${x} ${y}`);
+          started = true;
+        }
+        parts.push(`<path d="${segs.join(' ')}" fill="none" stroke="${color}" stroke-width="1.4"/>`);
+        continue;
+      }
       const mins = new Float64Array(cols).fill(Infinity);
       const maxs = new Float64Array(cols).fill(-Infinity);
       for (let i = 0; i < engine.t.count; i++) {

@@ -110,6 +110,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
+        <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
@@ -202,10 +203,22 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     btnCursor.classList.toggle('active', cursorMode);
   };
 
+  const STYLE_LABEL: Record<string, string> = { line: '曲线', dots: '点', bars: '峰谷' };
+  const STYLE_ORDER = ['line', 'dots', 'bars'] as const;
+
   btnOverlay.addEventListener('click', () => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
     updateButtons();
+    markDirty();
+  });
+
+  const btnStyle = el.querySelector('.wavep-style') as HTMLButtonElement;
+  btnStyle.addEventListener('click', () => {
+    const order = STYLE_ORDER;
+    view.style = order[(order.indexOf(view.style) + 1) % order.length];
+    btnStyle.textContent = view.style === 'line' ? '曲线' : view.style === 'dots' ? '点' : '峰谷';
+    persist();
     markDirty();
   });
 
@@ -256,7 +269,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         ctx.notify('当前应用版本过旧，不支持文件导出');
         return;
       }
-      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges }, ctx.themeColors());
+      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges, style: view.style }, ctx.themeColors());
       if (!svg) {
         ctx.notify('暂无波形数据可导出');
         return;
@@ -423,30 +436,49 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     markDirty();
   });
 
-  // ---------- 图例与状态（200ms 节流 DOM 更新） ----------
-  const renderLegend = () => {
-    const palette = buildColors().palette;
-    const va = view.cursorA !== null ? engine.nearestIndex(view.cursorA) : -1;
-    const vb = view.cursorB !== null ? engine.nearestIndex(view.cursorB) : -1;
+  // ---------- 图例与状态 ----------
+  // 结构（chip DOM）只在通道数变化时重建；数值/显隐/颜色按事件与 200ms 节拍定点更新。
+  // 此前每 200ms 整体重建 innerHTML——点击经常落在重建瞬间被吞，显隐要点好几次才生效。
+  let legendChipCount = -1;
+  const rebuildLegendStructure = () => {
     if (engine.channels.length === 0) {
       legendEl.innerHTML = '<span class="wavep-empty">选择数据源并收到数据后，通道将出现在这里</span>';
+      legendChipCount = 0;
       return;
     }
     legendEl.innerHTML = engine.channels
-      .map((ring, i) => {
-        const value = ring.count > 0 ? ring.at(ring.count - 1) : NaN;
-        const vaV = va >= 0 ? ring.at(va) : NaN;
-        const vbV = vb >= 0 ? ring.at(vb) : NaN;
-        const delta = view.cursorA !== null && view.cursorB !== null ? fmtValue(vbV - vaV) : null;
-        const color = palette[i % palette.length];
-        return `<span class="wavep-chip${engine.visible[i] !== false ? '' : ' off'}" data-index="${i}" title="点击${engine.visible[i] !== false ? '隐藏' : '显示'}">
-          <i class="wavep-dot" style="background:${color}"></i>
-          <span class="wavep-chip-name">${esc(engine.names[i] ?? `CH${i + 1}`)}</span>
-          <span class="wavep-chip-val">${fmtValue(value)}</span>
-          ${delta ? `<span class="wavep-chip-delta">Δ ${delta}</span>` : ''}
-        </span>`;
-      })
+      .map(
+        (_, i) =>
+          `<span class="wavep-chip" data-index="${i}" title="点击色块换色 / 双击恢复默认；点击其余区域隐藏或显示">` +
+          `<i class="wavep-dot"></i><span class="wavep-chip-name"></span>` +
+          `<span class="wavep-chip-val"></span><span class="wavep-chip-delta"></span></span>`
+      )
       .join('');
+    legendChipCount = engine.channels.length;
+  };
+
+  const updateLegend = () => {
+    if (engine.channels.length !== legendChipCount) rebuildLegendStructure();
+    if (legendChipCount === 0) return;
+    const palette = buildColors().palette;
+    const va = view.cursorA !== null ? engine.nearestIndex(view.cursorA) : -1;
+    const vb = view.cursorB !== null ? engine.nearestIndex(view.cursorB) : -1;
+    for (let i = 0; i < engine.channels.length; i++) {
+      const chip = legendEl.querySelector(`.wavep-chip[data-index="${i}"]`) as HTMLElement | null;
+      if (!chip) continue;
+      const ring = engine.channels[i];
+      const value = ring.count > 0 ? ring.at(ring.count - 1) : NaN;
+      const vaV = va >= 0 ? ring.at(va) : NaN;
+      const vbV = vb >= 0 ? ring.at(vb) : NaN;
+      const delta = view.cursorA !== null && view.cursorB !== null ? fmtValue(vbV - vaV) : '';
+      const visible = engine.visible[i] !== false;
+      const color = palette[i % palette.length];
+      chip.classList.toggle('off', !visible);
+      (chip.querySelector('.wavep-dot') as HTMLElement).style.background = color;
+      (chip.querySelector('.wavep-chip-name') as HTMLElement).textContent = engine.names[i] ?? `CH${i + 1}`;
+      (chip.querySelector('.wavep-chip-val') as HTMLElement).textContent = fmtValue(value);
+      (chip.querySelector('.wavep-chip-delta') as HTMLElement).textContent = delta ? 'Δ ' + delta : '';
+    }
   };
 
   legendEl.addEventListener('click', (e) => {
@@ -473,7 +505,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       delete colorOverrides[index];
       persist();
       markDirty();
-      renderLegend();
+      updateLegend();
     }
   });
   colorInput.addEventListener('change', () => {
@@ -483,7 +515,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       colorOverrides[pendingColorIndex] = v;
       persist();
       markDirty();
-      renderLegend();
+      updateLegend();
     }
     pendingColorIndex = -1;
   });
@@ -539,7 +571,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     }
     if (now - uiMark >= 200) {
       uiMark = now;
-      renderLegend();
+      updateLegend();
       renderStatus();
     }
     rafId = requestAnimationFrame(loop);
@@ -556,6 +588,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       if (typeof saved.overlay === 'boolean') view.overlay = saved.overlay;
       if (typeof saved.windowMs === 'number')
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
+      if (saved.style === 'line' || saved.style === 'dots' || saved.style === 'bars') view.style = saved.style;
       if (saved.colors && typeof saved.colors === 'object') {
         for (const [k, v] of Object.entries(saved.colors)) {
           const idx = Number(k);
@@ -577,7 +610,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   const persist = () => {
     try {
-      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, colors: { ...colorOverrides } });
+      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
     } catch {
       /* 宿主未提供 storage 时静默 */
     }

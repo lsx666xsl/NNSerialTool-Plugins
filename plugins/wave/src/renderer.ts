@@ -8,14 +8,17 @@ export interface YRange {
   max: number;
 }
 
+export type RenderStyle = 'line' | 'dots' | 'bars';
+
 export interface ViewState {
   follow: boolean; // 跟随最新（rightT 恒等于最新样本时间）
   rightT: number; // 右边界时间（非跟随/冻结时生效）
   windowMs: number; // 时间窗宽度（ms）
   frozen: boolean; // 冻结：画面停住，后台继续采集
   overlay: boolean; // true=叠加（共用一个坐标系），false=分栏（每通道独立）
+  style: RenderStyle; // 显示样式：曲线 / 点 / 峰谷
   yRanges: Map<number, YRange | null>; // 每通道 Y 范围，null=自动
-  cursorA: number | null;
+  cursorA: number | null; // 游标时间（ms）
   cursorB: number | null;
 }
 
@@ -25,6 +28,7 @@ export const defaultViewState = (): ViewState => ({
   windowMs: 10_000,
   frozen: false,
   overlay: false,
+  style: 'line',
   yRanges: new Map(),
   cursorA: null,
   cursorB: null,
@@ -174,43 +178,84 @@ export const drawWave = (
       paneRange = { min: lo - pad, max: hi + pad };
     }
 
-    // 第二遍：每像素列 min/max 抽稀后画折线（峰谷不丢）
+    // 第二遍：按显示样式绘制——
+    //   line: 逐点连成平滑曲线；dots: 每采样一个实心点；bars: 像素列 min/max 竖条（峰谷不丢）
     const cols = Math.max(1, Math.floor(plotW));
     for (const ch of pane.channels) {
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v: number) => pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
-      const mins = new Float32Array(cols).fill(Infinity);
-      const maxs = new Float32Array(cols).fill(-Infinity);
-      for (let i = i0; i < i1; i++) {
-        const t = engine.t.at(i);
-        if (t < t0 || t > t1) continue;
-        const x = ((t - t0) / view.windowMs) * cols;
-        const col = clamp(Math.floor(x), 0, cols - 1);
-        const v = engine.channels[ch].at(i);
-        if (v < mins[col]) mins[col] = v;
-        if (v > maxs[col]) maxs[col] = v;
-      }
-      g.beginPath();
-      g.strokeStyle = colors.palette[ch % colors.palette.length];
-      g.lineWidth = 1.25;
-      let started = false;
-      let lastX = -1;
-      for (let col = 0; col < cols; col++) {
-        if (mins[col] > maxs[col]) continue; // 空列
-        const x = plotLeft + col + 0.5;
-        const yMin = yOf(maxs[col]); // 屏幕 y 向下，max 在上
-        const yMax = yOf(mins[col]);
-        if (!started || col - lastX > 1) {
-          g.moveTo(x, yMax);
-          g.lineTo(x, yMin);
-        } else {
-          g.lineTo(x, yMax);
-          g.lineTo(x, yMin);
+      const color = colors.palette[ch % colors.palette.length];
+      g.lineJoin = 'round';
+      g.lineCap = 'round';
+
+      if (view.style === 'bars') {
+        // 像素列 min/max 抽稀竖条
+        const mins = new Float32Array(cols).fill(Infinity);
+        const maxs = new Float32Array(cols).fill(-Infinity);
+        for (let i = i0; i < i1; i++) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = ((t - t0) / view.windowMs) * cols;
+          const col = clamp(Math.floor(x), 0, cols - 1);
+          const v = engine.channels[ch].at(i);
+          if (v < mins[col]) mins[col] = v;
+          if (v > maxs[col]) maxs[col] = v;
         }
-        started = true;
-        lastX = col;
+        g.beginPath();
+        g.strokeStyle = color;
+        g.lineWidth = 1.25;
+        let started = false;
+        let lastX = -1;
+        for (let col = 0; col < cols; col++) {
+          if (mins[col] > maxs[col]) continue; // 空列
+          const x = plotLeft + col + 0.5;
+          const yMin = yOf(maxs[col]); // 屏幕 y 向下，max 在上
+          const yMax = yOf(mins[col]);
+          if (!started || col - lastX > 1) {
+            g.moveTo(x, yMax);
+            g.lineTo(x, yMin);
+          } else {
+            g.lineTo(x, yMax);
+            g.lineTo(x, yMin);
+          }
+          started = true;
+          lastX = col;
+        }
+        g.stroke();
+      } else if (view.style === 'dots') {
+        // 点显示：每采样一个 3px 实心方块（超量时按步长抽点，防止单帧卡顿）
+        g.fillStyle = color;
+        const total = i1 - i0;
+        const stride = total > 8000 ? Math.ceil(total / 8000) : 1;
+        for (let i = i0; i < i1; i += stride) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = plotLeft + ((t - t0) / view.windowMs) * plotW;
+          const y = yOf(engine.channels[ch].at(i));
+          g.fillRect(x - 1.5, y - 1.5, 3, 3);
+        }
+      } else {
+        // 曲线：逐点连线（全量采样，超 2 万点按步长抽点保流畅）
+        g.beginPath();
+        g.strokeStyle = color;
+        g.lineWidth = 1.6;
+        const total = i1 - i0;
+        const stride = total > 20_000 ? Math.ceil(total / 20_000) : 1;
+        let started = false;
+        for (let i = i0; i < i1; i += stride) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = plotLeft + ((t - t0) / view.windowMs) * plotW;
+          const y = yOf(engine.channels[ch].at(i));
+          if (!started) {
+            g.moveTo(x, y);
+            started = true;
+          } else {
+            g.lineTo(x, y);
+          }
+        }
+        g.stroke();
       }
-      g.stroke();
     }
 
     // 栏背景与 Y 轴刻度

@@ -201,6 +201,7 @@ var defaultViewState = () => ({
   windowMs: 1e4,
   frozen: false,
   overlay: false,
+  style: "line",
   yRanges: /* @__PURE__ */ new Map(),
   cursorA: null,
   cursorB: null
@@ -325,38 +326,74 @@ var drawWave = (canvas, engine, view, colors) => {
     for (const ch of pane.channels) {
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
-      const mins = new Float32Array(cols).fill(Infinity);
-      const maxs = new Float32Array(cols).fill(-Infinity);
-      for (let i = i0; i < i1; i++) {
-        const t = engine.t.at(i);
-        if (t < t0 || t > t1) continue;
-        const x = (t - t0) / view.windowMs * cols;
-        const col = clamp(Math.floor(x), 0, cols - 1);
-        const v = engine.channels[ch].at(i);
-        if (v < mins[col]) mins[col] = v;
-        if (v > maxs[col]) maxs[col] = v;
-      }
-      g.beginPath();
-      g.strokeStyle = colors.palette[ch % colors.palette.length];
-      g.lineWidth = 1.25;
-      let started = false;
-      let lastX = -1;
-      for (let col = 0; col < cols; col++) {
-        if (mins[col] > maxs[col]) continue;
-        const x = plotLeft + col + 0.5;
-        const yMin = yOf(maxs[col]);
-        const yMax = yOf(mins[col]);
-        if (!started || col - lastX > 1) {
-          g.moveTo(x, yMax);
-          g.lineTo(x, yMin);
-        } else {
-          g.lineTo(x, yMax);
-          g.lineTo(x, yMin);
+      const color = colors.palette[ch % colors.palette.length];
+      g.lineJoin = "round";
+      g.lineCap = "round";
+      if (view.style === "bars") {
+        const mins = new Float32Array(cols).fill(Infinity);
+        const maxs = new Float32Array(cols).fill(-Infinity);
+        for (let i = i0; i < i1; i++) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = (t - t0) / view.windowMs * cols;
+          const col = clamp(Math.floor(x), 0, cols - 1);
+          const v = engine.channels[ch].at(i);
+          if (v < mins[col]) mins[col] = v;
+          if (v > maxs[col]) maxs[col] = v;
         }
-        started = true;
-        lastX = col;
+        g.beginPath();
+        g.strokeStyle = color;
+        g.lineWidth = 1.25;
+        let started = false;
+        let lastX = -1;
+        for (let col = 0; col < cols; col++) {
+          if (mins[col] > maxs[col]) continue;
+          const x = plotLeft + col + 0.5;
+          const yMin = yOf(maxs[col]);
+          const yMax = yOf(mins[col]);
+          if (!started || col - lastX > 1) {
+            g.moveTo(x, yMax);
+            g.lineTo(x, yMin);
+          } else {
+            g.lineTo(x, yMax);
+            g.lineTo(x, yMin);
+          }
+          started = true;
+          lastX = col;
+        }
+        g.stroke();
+      } else if (view.style === "dots") {
+        g.fillStyle = color;
+        const total = i1 - i0;
+        const stride = total > 8e3 ? Math.ceil(total / 8e3) : 1;
+        for (let i = i0; i < i1; i += stride) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = plotLeft + (t - t0) / view.windowMs * plotW;
+          const y = yOf(engine.channels[ch].at(i));
+          g.fillRect(x - 1.5, y - 1.5, 3, 3);
+        }
+      } else {
+        g.beginPath();
+        g.strokeStyle = color;
+        g.lineWidth = 1.6;
+        const total = i1 - i0;
+        const stride = total > 2e4 ? Math.ceil(total / 2e4) : 1;
+        let started = false;
+        for (let i = i0; i < i1; i += stride) {
+          const t = engine.t.at(i);
+          if (t < t0 || t > t1) continue;
+          const x = plotLeft + (t - t0) / view.windowMs * plotW;
+          const y = yOf(engine.channels[ch].at(i));
+          if (!started) {
+            g.moveTo(x, y);
+            started = true;
+          } else {
+            g.lineTo(x, y);
+          }
+        }
+        g.stroke();
       }
-      g.stroke();
     }
     g.strokeStyle = colors.border;
     g.lineWidth = 1;
@@ -643,6 +680,29 @@ var buildWaveSvg = (engine, opts, colors) => {
     for (const ch of pane.channels) {
       const color = colors.palette[ch % colors.palette.length];
       const yOf2 = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
+      const style = opts.style ?? "bars";
+      if (style === "dots") {
+        const stride = Math.max(1, Math.ceil(engine.t.count / 8e3));
+        for (let i = 0; i < engine.t.count; i += stride) {
+          const x = (plotLeft + (engine.t.at(i) - t0) / span * plotW).toFixed(1);
+          const y = yOf2(engine.channels[ch].at(i)).toFixed(1);
+          parts.push(`<rect x="${+x - 1.5}" y="${+y - 1.5}" width="3" height="3" fill="${color}"/>`);
+        }
+        continue;
+      }
+      if (style === "line") {
+        const stride = Math.max(1, Math.ceil(engine.t.count / 4e3));
+        const segs2 = [];
+        let started = false;
+        for (let i = 0; i < engine.t.count; i += stride) {
+          const x = (plotLeft + (engine.t.at(i) - t0) / span * plotW).toFixed(1);
+          const y = yOf2(engine.channels[ch].at(i)).toFixed(1);
+          segs2.push(`${started ? "L" : "M"}${x} ${y}`);
+          started = true;
+        }
+        parts.push(`<path d="${segs2.join(" ")}" fill="none" stroke="${color}" stroke-width="1.4"/>`);
+        continue;
+      }
       const mins = new Float64Array(cols).fill(Infinity);
       const maxs = new Float64Array(cols).fill(-Infinity);
       for (let i = 0; i < engine.t.count; i++) {
@@ -763,6 +823,7 @@ var mountWave = (el, ctx) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
+        <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
@@ -836,10 +897,20 @@ var mountWave = (el, ctx) => {
     btnFollow.style.display = !view.follow && !view.frozen ? "" : "none";
     btnCursor.classList.toggle("active", cursorMode);
   };
+  const STYLE_LABEL = { line: "曲线", dots: "点", bars: "峰谷" };
+  const STYLE_ORDER = ["line", "dots", "bars"];
   btnOverlay.addEventListener("click", () => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
     updateButtons();
+    markDirty();
+  });
+  const btnStyle = el.querySelector(".wavep-style");
+  btnStyle.addEventListener("click", () => {
+    const order = STYLE_ORDER;
+    view.style = order[(order.indexOf(view.style) + 1) % order.length];
+    btnStyle.textContent = view.style === "line" ? "曲线" : view.style === "dots" ? "点" : "峰谷";
+    persist();
     markDirty();
   });
   btnFreeze.addEventListener("click", () => {
@@ -884,7 +955,7 @@ var mountWave = (el, ctx) => {
         ctx.notify("当前应用版本过旧，不支持文件导出");
         return;
       }
-      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges }, ctx.themeColors());
+      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges, style: view.style }, ctx.themeColors());
       if (!svg) {
         ctx.notify("暂无波形数据可导出");
         return;
@@ -1026,27 +1097,40 @@ var mountWave = (el, ctx) => {
     }
     markDirty();
   });
-  const renderLegend = () => {
+  let legendChipCount = -1;
+  const rebuildLegendStructure = () => {
+    if (engine.channels.length === 0) {
+      legendEl.innerHTML = '<span class="wavep-empty">选择数据源并收到数据后，通道将出现在这里</span>';
+      legendChipCount = 0;
+      return;
+    }
+    legendEl.innerHTML = engine.channels.map(
+      (_, i) => `<span class="wavep-chip" data-index="${i}" title="点击色块换色 / 双击恢复默认；点击其余区域隐藏或显示"><i class="wavep-dot"></i><span class="wavep-chip-name"></span><span class="wavep-chip-val"></span><span class="wavep-chip-delta"></span></span>`
+    ).join("");
+    legendChipCount = engine.channels.length;
+  };
+  const updateLegend = () => {
+    if (engine.channels.length !== legendChipCount) rebuildLegendStructure();
+    if (legendChipCount === 0) return;
     const palette = buildColors().palette;
     const va = view.cursorA !== null ? engine.nearestIndex(view.cursorA) : -1;
     const vb = view.cursorB !== null ? engine.nearestIndex(view.cursorB) : -1;
-    if (engine.channels.length === 0) {
-      legendEl.innerHTML = '<span class="wavep-empty">选择数据源并收到数据后，通道将出现在这里</span>';
-      return;
-    }
-    legendEl.innerHTML = engine.channels.map((ring, i) => {
+    for (let i = 0; i < engine.channels.length; i++) {
+      const chip = legendEl.querySelector(`.wavep-chip[data-index="${i}"]`);
+      if (!chip) continue;
+      const ring = engine.channels[i];
       const value = ring.count > 0 ? ring.at(ring.count - 1) : NaN;
       const vaV = va >= 0 ? ring.at(va) : NaN;
       const vbV = vb >= 0 ? ring.at(vb) : NaN;
-      const delta = view.cursorA !== null && view.cursorB !== null ? fmtValue(vbV - vaV) : null;
+      const delta = view.cursorA !== null && view.cursorB !== null ? fmtValue(vbV - vaV) : "";
+      const visible = engine.visible[i] !== false;
       const color = palette[i % palette.length];
-      return `<span class="wavep-chip${engine.visible[i] !== false ? "" : " off"}" data-index="${i}" title="点击${engine.visible[i] !== false ? "隐藏" : "显示"}">
-          <i class="wavep-dot" style="background:${color}"></i>
-          <span class="wavep-chip-name">${esc2(engine.names[i] ?? `CH${i + 1}`)}</span>
-          <span class="wavep-chip-val">${fmtValue(value)}</span>
-          ${delta ? `<span class="wavep-chip-delta">Δ ${delta}</span>` : ""}
-        </span>`;
-    }).join("");
+      chip.classList.toggle("off", !visible);
+      chip.querySelector(".wavep-dot").style.background = color;
+      chip.querySelector(".wavep-chip-name").textContent = engine.names[i] ?? `CH${i + 1}`;
+      chip.querySelector(".wavep-chip-val").textContent = fmtValue(value);
+      chip.querySelector(".wavep-chip-delta").textContent = delta ? "Δ " + delta : "";
+    }
   };
   legendEl.addEventListener("click", (e) => {
     const target = e.target;
@@ -1071,7 +1155,7 @@ var mountWave = (el, ctx) => {
       delete colorOverrides[index];
       persist();
       markDirty();
-      renderLegend();
+      updateLegend();
     }
   });
   colorInput.addEventListener("change", () => {
@@ -1081,7 +1165,7 @@ var mountWave = (el, ctx) => {
       colorOverrides[pendingColorIndex] = v;
       persist();
       markDirty();
-      renderLegend();
+      updateLegend();
     }
     pendingColorIndex = -1;
   });
@@ -1131,7 +1215,7 @@ var mountWave = (el, ctx) => {
     }
     if (now - uiMark >= 200) {
       uiMark = now;
-      renderLegend();
+      updateLegend();
       renderStatus();
     }
     rafId = requestAnimationFrame(loop);
@@ -1146,6 +1230,7 @@ var mountWave = (el, ctx) => {
       if (typeof saved.overlay === "boolean") view.overlay = saved.overlay;
       if (typeof saved.windowMs === "number")
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
+      if (saved.style === "line" || saved.style === "dots" || saved.style === "bars") view.style = saved.style;
       if (saved.colors && typeof saved.colors === "object") {
         for (const [k, v] of Object.entries(saved.colors)) {
           const idx = Number(k);
@@ -1163,7 +1248,7 @@ var mountWave = (el, ctx) => {
   markDirty();
   const persist = () => {
     try {
-      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, colors: { ...colorOverrides } });
+      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
     } catch {
     }
   };
