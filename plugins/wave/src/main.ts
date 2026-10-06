@@ -15,6 +15,7 @@ import {
   type YRange,
 } from './renderer';
 import { FIRMWARE_FILES } from './firmware';
+import { buildWaveSvg } from './svg-export';
 
 const STYLE_ID = 'nnwave-plugin-style';
 
@@ -113,7 +114,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
         <button type="button" class="wavep-btn wavep-clear">清空</button>
-        <button type="button" class="wavep-btn wavep-export">导出协议文件</button>
+        <button type="button" class="wavep-btn wavep-export">导出SVG</button>
+        <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
       </div>
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
@@ -130,7 +132,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const btnFollow = el.querySelector('.wavep-follow') as HTMLButtonElement;
   const btnCursor = el.querySelector('.wavep-cursorbtn') as HTMLButtonElement;
   const btnClear = el.querySelector('.wavep-clear') as HTMLButtonElement;
-  const btnExport = el.querySelector('.wavep-export') as HTMLButtonElement;
+  const btnSvgExport = el.querySelector('.wavep-export') as HTMLButtonElement;
+  const btnExport = el.querySelector('.wavep-export-protocol') as HTMLButtonElement;
   const legendEl = el.querySelector('.wavep-legend') as HTMLElement;
   const statsEl = el.querySelector('.wavep-stats') as HTMLElement;
   const windowEl = el.querySelector('.wavep-window') as HTMLElement;
@@ -236,16 +239,36 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     markDirty();
   });
 
-  btnExport.addEventListener('click', () => {
+  const exportProtocol = () => {
     void (async () => {
       if (!ctx.exportTextFiles) {
-        ctx.notify('当前应用版本过旧，不支持固件文件导出');
+        ctx.notify('当前应用版本过旧，不支持文件导出');
         return;
       }
       const dir = await ctx.exportTextFiles('选择协议文件导出目录', FIRMWARE_FILES, 'NN-Wave协议文件');
       if (dir) ctx.notify(`协议文件已导出到 ${dir}\NN-Wave协议文件`);
     })();
-  });
+  };
+
+  const exportSvg = () => {
+    void (async () => {
+      if (!ctx.exportTextFiles) {
+        ctx.notify('当前应用版本过旧，不支持文件导出');
+        return;
+      }
+      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges }, ctx.themeColors());
+      if (!svg) {
+        ctx.notify('暂无波形数据可导出');
+        return;
+      }
+      const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      const dir = await ctx.exportTextFiles('选择SVG导出目录', [{ name: `wave-${stamp}.svg`, text: svg }], 'NN-Wave波形快照');
+      if (dir) ctx.notify(`波形 SVG 已导出到 ${dir}\NN-Wave波形快照`);
+    })();
+  };
+
+  const btnSvg = el.querySelector('.wavep-export-svg') as HTMLButtonElement;
+  btnSvg.addEventListener('click', exportSvg);
 
   // ---------- 交互换算 ----------
   const pointerPos = (e: PointerEvent | WheelEvent | MouseEvent): { x: number; y: number } => {

@@ -309,9 +309,21 @@ var drawWave = (canvas, engine, view, colors) => {
       lastYRanges.set(ch, range);
       return range;
     };
+    let paneRange = null;
+    if (view.overlay) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const ch of pane.channels) {
+        const r = yRangeOf(ch);
+        lo = Math.min(lo, r.min);
+        hi = Math.max(hi, r.max);
+      }
+      const pad = (hi - lo) * 0.1;
+      paneRange = { min: lo - pad, max: hi + pad };
+    }
     const cols = Math.max(1, Math.floor(plotW));
     for (const ch of pane.channels) {
-      const range = yRangeOf(ch);
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
       const mins = new Float32Array(cols).fill(Infinity);
       const maxs = new Float32Array(cols).fill(-Infinity);
@@ -349,8 +361,8 @@ var drawWave = (canvas, engine, view, colors) => {
     g.strokeStyle = colors.border;
     g.lineWidth = 1;
     g.strokeRect(plotLeft + 0.5, pane.top + 0.5, plotW - 1, pane.height - 1);
-    if (!view.overlay || pane.channels.length === 1) {
-      const range = yRangeOf(pane.channels[0]);
+    {
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.channels[0]);
       const step = niceStep(range.max - range.min, 4);
       g.fillStyle = colors.textDim;
       g.font = "10px Consolas, monospace";
@@ -552,6 +564,120 @@ NNSerialTool 波形插件 → 数据源选对应会话。
   }
 ];
 
+// plugins/wave/src/svg-export.ts
+var WIDTH = 1200;
+var AXIS_W = 76;
+var PANE_H = 110;
+var PAD_L = 12;
+var TIME_AXIS_H2 = 30;
+var esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+var buildWaveSvg = (engine, opts, colors) => {
+  if (engine.t.count < 2) return null;
+  const visIdx = engine.channels.map((_, i) => i).filter((i) => engine.visible[i] !== false);
+  if (visIdx.length === 0) return null;
+  const t0 = engine.t.at(0);
+  const t1 = engine.lastT;
+  const span = Math.max(1, t1 - t0);
+  const panes = opts.overlay ? [{ channels: visIdx, top: PAD_L, height: PANE_H }] : visIdx.map((ch, i) => ({ channels: [ch], top: PAD_L + PANE_H * i, height: PANE_H }));
+  const plotLeft = PAD_L;
+  const plotRight = WIDTH - AXIS_W;
+  const plotW = plotRight - plotLeft;
+  const plotBottom = PAD_L + PANE_H * panes.length;
+  const height = plotBottom + TIME_AXIS_H2 + 12;
+  const cols = Math.min(1200, Math.max(1, Math.floor(plotW)));
+  const rangeOf = (ch) => {
+    const manual = opts.yRanges.get(ch);
+    if (manual) return manual;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < engine.t.count; i++) {
+      const v = engine.channels[ch].at(i);
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!isFinite(lo) || !isFinite(hi)) return { min: -1, max: 1 };
+    if (lo === hi) return { min: lo - 1, max: hi + 1 };
+    const pad = (hi - lo) * 0.1;
+    return { min: lo - pad, max: hi + pad };
+  };
+  let paneRange = null;
+  if (opts.overlay) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const ch of visIdx) {
+      const r = rangeOf(ch);
+      lo = Math.min(lo, r.min);
+      hi = Math.max(hi, r.max);
+    }
+    const pad = (hi - lo) * 0.1;
+    paneRange = { min: lo - pad, max: hi + pad };
+  }
+  const parts = [];
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace("T", " ").slice(0, 19);
+  parts.push(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}" font-family="Consolas, monospace">`
+  );
+  parts.push(`<rect width="100%" height="100%" fill="${colors.bg}"/>`);
+  parts.push(
+    `<text x="${PAD_L}" y="16" font-size="13" fill="${colors.text}">NNSerialTool 波形导出 · ${esc(stamp)} · 全量 ${engine.t.count} 帧</text>`
+  );
+  const yTickLabels = [];
+  for (const pane of panes) {
+    const range = opts.overlay && paneRange ? paneRange : rangeOf(pane.channels[0]);
+    const yOf = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
+    parts.push(
+      `<rect x="${plotLeft}" y="${pane.top}" width="${plotW}" height="${pane.height}" fill="none" stroke="${colors.border}"/>`
+    );
+    const label = pane.channels.map((ch) => engine.names[ch] ?? `CH${ch + 1}`).join(" / ");
+    parts.push(`<text x="${plotLeft + 6}" y="${pane.top + 14}" font-size="12" fill="${colors.text}">${esc(label)}</text>`);
+    const step = niceStep(range.max - range.min, 4);
+    for (let v = Math.ceil(range.min / step) * step; v <= range.max; v += step) {
+      const y = pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
+      if (y < pane.top + 6 || y > pane.top + pane.height - 2) continue;
+      parts.push(
+        `<line x1="${plotLeft}" y1="${y}" x2="${plotRight}" y2="${y}" stroke="${colors.grid}"/>`
+      );
+      parts.push(`<text x="${plotRight + 6}" y="${y}" font-size="10" fill="${colors.textDim}">${esc(fmtValue(v))}</text>`);
+      yTickLabels.push(fmtValue(v));
+    }
+    for (const ch of pane.channels) {
+      const color = colors.palette[ch % colors.palette.length];
+      const yOf2 = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
+      const mins = new Float64Array(cols).fill(Infinity);
+      const maxs = new Float64Array(cols).fill(-Infinity);
+      for (let i = 0; i < engine.t.count; i++) {
+        const t = engine.t.at(i);
+        const x = (t - t0) / span * cols;
+        const col = Math.min(cols - 1, Math.max(0, Math.floor(x)));
+        const v = engine.channels[ch].at(i);
+        if (v < mins[col]) mins[col] = v;
+        if (v > maxs[col]) maxs[col] = v;
+      }
+      const segs = [];
+      let lastCol = -2;
+      for (let col = 0; col < cols; col++) {
+        if (mins[col] > maxs[col]) continue;
+        const x = (plotLeft + col + 0.5).toFixed(1);
+        if (col - lastCol > 1 || segs.length === 0) {
+          segs.push(`M${x} ${yOf2(maxs[col]).toFixed(1)}`);
+        }
+        segs.push(`L${x} ${yOf2(mins[col]).toFixed(1)}`);
+        lastCol = col;
+      }
+      parts.push(`<path d="${segs.join(" ")}" fill="none" stroke="${color}" stroke-width="1.2"/>`);
+    }
+  }
+  const tStep = niceStep(span, 10);
+  for (let t = Math.ceil(t0 / tStep) * tStep; t <= t1; t += tStep) {
+    const x = plotLeft + (t - t0) / span * plotW;
+    if (x < plotLeft || x > plotLeft + plotW) continue;
+    parts.push(`<text x="${x.toFixed(1)}" y="${plotBottom + 16}" font-size="10" fill="${colors.textDim}" text-anchor="middle">${esc(fmtDuration(t - t0))}</text>`);
+  }
+  parts.push("</svg>");
+  void yTickLabels;
+  return parts.join("\n");
+};
+
 // plugins/wave/src/main.ts
 var STYLE_ID = "nnwave-plugin-style";
 var CSS = `
@@ -606,7 +732,7 @@ var ensureStyle = () => {
   tag.textContent = CSS;
   document.head.appendChild(tag);
 };
-var esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+var esc2 = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 function activate(ctx) {
   ctx.registerProtocol({
     id: "nnwave",
@@ -641,7 +767,8 @@ var mountWave = (el, ctx) => {
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
         <button type="button" class="wavep-btn wavep-clear">清空</button>
-        <button type="button" class="wavep-btn wavep-export">导出协议文件</button>
+        <button type="button" class="wavep-btn wavep-export">导出SVG</button>
+        <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
       </div>
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
@@ -657,7 +784,8 @@ var mountWave = (el, ctx) => {
   const btnFollow = el.querySelector(".wavep-follow");
   const btnCursor = el.querySelector(".wavep-cursorbtn");
   const btnClear = el.querySelector(".wavep-clear");
-  const btnExport = el.querySelector(".wavep-export");
+  const btnSvgExport = el.querySelector(".wavep-export");
+  const btnExport = el.querySelector(".wavep-export-protocol");
   const legendEl = el.querySelector(".wavep-legend");
   const statsEl = el.querySelector(".wavep-stats");
   const windowEl = el.querySelector(".wavep-window");
@@ -691,7 +819,7 @@ var mountWave = (el, ctx) => {
     const list = ctx.listSessions();
     const cur = sourceSel.value;
     sourceSel.innerHTML = '<option value="">选择数据源会话</option>' + list.map(
-      (s) => `<option value="${esc(s.id)}">${esc(s.name)}${s.status === "connected" ? "" : "（未连接）"}</option>`
+      (s) => `<option value="${esc2(s.id)}">${esc2(s.name)}${s.status === "connected" ? "" : "（未连接）"}</option>`
     ).join("");
     if (cur && list.some((s) => s.id === cur)) sourceSel.value = cur;
     else sourceSel.value = engine.attachedSessionId && list.some((s) => s.id === engine.attachedSessionId) ? engine.attachedSessionId : "";
@@ -740,16 +868,34 @@ var mountWave = (el, ctx) => {
     engine.clear();
     markDirty();
   });
-  btnExport.addEventListener("click", () => {
+  const exportProtocol = () => {
     void (async () => {
       if (!ctx.exportTextFiles) {
-        ctx.notify("当前应用版本过旧，不支持固件文件导出");
+        ctx.notify("当前应用版本过旧，不支持文件导出");
         return;
       }
       const dir = await ctx.exportTextFiles("选择协议文件导出目录", FIRMWARE_FILES, "NN-Wave协议文件");
       if (dir) ctx.notify(`协议文件已导出到 ${dir}NN-Wave协议文件`);
     })();
-  });
+  };
+  const exportSvg = () => {
+    void (async () => {
+      if (!ctx.exportTextFiles) {
+        ctx.notify("当前应用版本过旧，不支持文件导出");
+        return;
+      }
+      const svg = buildWaveSvg(engine, { overlay: view.overlay, yRanges: view.yRanges }, ctx.themeColors());
+      if (!svg) {
+        ctx.notify("暂无波形数据可导出");
+        return;
+      }
+      const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:T]/g, "-").slice(0, 19);
+      const dir = await ctx.exportTextFiles("选择SVG导出目录", [{ name: `wave-${stamp}.svg`, text: svg }], "NN-Wave波形快照");
+      if (dir) ctx.notify(`波形 SVG 已导出到 ${dir}NN-Wave波形快照`);
+    })();
+  };
+  const btnSvg = el.querySelector(".wavep-export-svg");
+  btnSvg.addEventListener("click", exportSvg);
   const pointerPos = (e) => {
     const rect = canvas.getBoundingClientRect();
     const scale = rect.width / (canvas.clientWidth || 1);
@@ -896,7 +1042,7 @@ var mountWave = (el, ctx) => {
       const color = palette[i % palette.length];
       return `<span class="wavep-chip${engine.visible[i] !== false ? "" : " off"}" data-index="${i}" title="点击${engine.visible[i] !== false ? "隐藏" : "显示"}">
           <i class="wavep-dot" style="background:${color}"></i>
-          <span class="wavep-chip-name">${esc(engine.names[i] ?? `CH${i + 1}`)}</span>
+          <span class="wavep-chip-name">${esc2(engine.names[i] ?? `CH${i + 1}`)}</span>
           <span class="wavep-chip-val">${fmtValue(value)}</span>
           ${delta ? `<span class="wavep-chip-delta">Δ ${delta}</span>` : ""}
         </span>`;

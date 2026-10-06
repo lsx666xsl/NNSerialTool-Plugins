@@ -160,10 +160,24 @@ export const drawWave = (
       return range;
     };
 
+    // 叠加模式共用同一量程（各通道自动/手动范围的并集）——否则各通道各自归一化，无法对比相位
+    let paneRange: YRange | null = null;
+    if (view.overlay) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const ch of pane.channels) {
+        const r = yRangeOf(ch);
+        lo = Math.min(lo, r.min);
+        hi = Math.max(hi, r.max);
+      }
+      const pad = (hi - lo) * 0.1;
+      paneRange = { min: lo - pad, max: hi + pad };
+    }
+
     // 第二遍：每像素列 min/max 抽稀后画折线（峰谷不丢）
     const cols = Math.max(1, Math.floor(plotW));
     for (const ch of pane.channels) {
-      const range = yRangeOf(ch);
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v: number) => pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
       const mins = new Float32Array(cols).fill(Infinity);
       const maxs = new Float32Array(cols).fill(-Infinity);
@@ -203,8 +217,8 @@ export const drawWave = (
     g.strokeStyle = colors.border;
     g.lineWidth = 1;
     g.strokeRect(plotLeft + 0.5, pane.top + 0.5, plotW - 1, pane.height - 1);
-    if (!view.overlay || pane.channels.length === 1) {
-      const range = yRangeOf(pane.channels[0]);
+    {
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.channels[0]);
       const step = niceStep(range.max - range.min, 4);
       g.fillStyle = colors.textDim;
       g.font = '10px Consolas, monospace';
