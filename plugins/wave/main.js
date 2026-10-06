@@ -1146,6 +1146,7 @@ var mountWave = (el, ctx) => {
       return;
     }
     engine.visible[index] = !(engine.visible[index] !== false);
+    chip.classList.toggle("off", engine.visible[index] === false);
     markDirty();
   });
   legendEl.addEventListener("dblclick", (e) => {

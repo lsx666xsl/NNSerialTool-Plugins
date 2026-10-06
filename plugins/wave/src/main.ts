@@ -494,6 +494,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       return;
     }
     engine.visible[index] = !(engine.visible[index] !== false);
+    // 立即更新色块视觉状态——等 200ms 节拍会造成"点了好几次才生效"的错觉
+    chip.classList.toggle('off', engine.visible[index] === false);
     markDirty();
   });
   legendEl.addEventListener('dblclick', (e) => {
