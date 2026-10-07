@@ -1022,16 +1022,13 @@ var mountWave = (el, ctx) => {
       }
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
       view.windowMs = newWindow;
-      if (view.follow) {
-        view.rightT = engine.lastT;
-      } else {
-        const tAt = timeAtX(x);
-        const rightEdge = geom.plotLeft + geom.plotWidth;
-        const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
-        const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
-        const minRightT = firstT + newWindow;
-        view.rightT = newRightT >= engine.lastT - 1 ? engine.lastT : Math.max(newRightT, Math.min(minRightT, engine.lastT));
-      }
+      const tAt = timeAtX(x);
+      const rightEdge = geom.plotLeft + geom.plotWidth;
+      const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const minRightT = firstT + newWindow;
+      view.rightT = newRightT >= engine.lastT - 1 ? engine.lastT : Math.max(newRightT, Math.min(minRightT, engine.lastT));
+      view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       updateButtons();
       markDirty();
     },

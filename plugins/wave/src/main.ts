@@ -335,21 +335,18 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       }
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
       view.windowMs = newWindow;
-      if (view.follow) {
-        // 跟随中：右缘锚定最新数据——缩放不脱离实时流（旧逻辑光标不在右缘就
-        // 解除跟随，新数据持续右移，窗口冻结在原地 → 波形"消失"）
-        view.rightT = engine.lastT;
-      } else {
-        // 非跟随：围绕光标缩放，右缘钳制在数据范围内（拖不进空白未来）
-        const tAt = timeAtX(x);
-        const rightEdge = geom.plotLeft + geom.plotWidth;
-        const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
-        const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
-        const minRightT = firstT + newWindow;
-        view.rightT = newRightT >= engine.lastT - 1
-          ? engine.lastT
-          : Math.max(newRightT, Math.min(minRightT, engine.lastT));
-      }
+      // 缩放一律以光标为锚点（用户要求的标准示波器交互）：
+      // 右缘钳制在数据范围内（拖不出空白未来）；光标区域放大后视图停在原地，
+      // 拖回最右或点「回到最新」即恢复实时跟随
+      const tAt = timeAtX(x);
+      const rightEdge = geom.plotLeft + geom.plotWidth;
+      const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const minRightT = firstT + newWindow;
+      view.rightT = newRightT >= engine.lastT - 1
+        ? engine.lastT
+        : Math.max(newRightT, Math.min(minRightT, engine.lastT));
+      view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       updateButtons();
       markDirty();
     },
