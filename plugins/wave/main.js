@@ -161,7 +161,9 @@ var WaveEngine = class {
   ingest(f) {
     this.ensureChannels(f.channels.length);
     for (let c = 0; c < f.channels.length; c++) this.channels[c].push(f.channels[c]);
-    this.t.push(f.t);
+    let t = f.t;
+    if (this.t.count > 0 && t <= this.t.at(this.t.count - 1)) t = this.t.at(this.t.count - 1) + 1;
+    this.t.push(t);
     if (f.seq !== void 0) {
       if (this.lastSeq >= 0) this.stats.drops += f.seq - this.lastSeq - 1 & 255;
       this.lastSeq = f.seq;
@@ -368,30 +370,24 @@ var drawWave = (canvas, engine, view, colors) => {
         g.fillStyle = color;
         const total = i1 - i0;
         const stride = total > 8e3 ? Math.ceil(total / 8e3) : 1;
-        const denom = Math.max(1, total - 1);
-        let ord = 0;
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + ord / denom * plotW;
+          const x = plotLeft + (t - t0) / view.windowMs * plotW;
           const y = yOf(engine.channels[ch].at(i));
           g.fillRect(x - 1.5, y - 1.5, 3, 3);
-          ord++;
         }
       } else {
         g.strokeStyle = color;
         g.lineWidth = 1.6;
         const total = i1 - i0;
         const stride = total > 2e4 ? Math.ceil(total / 2e4) : 1;
-        const denom = Math.max(1, total - 1);
         const pts = [];
-        let ord = 0;
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + ord / denom * plotW;
+          const x = plotLeft + (t - t0) / view.windowMs * plotW;
           pts.push([x, yOf(engine.channels[ch].at(i))]);
-          ord += stride;
         }
         g.beginPath();
         if (pts.length === 1) {

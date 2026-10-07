@@ -227,36 +227,31 @@ export const drawWave = (
         g.stroke();
       } else if (view.style === 'dots') {
         // 点显示：每采样一个 3px 实心方块（超量时按步长抽点，防止单帧卡顿）
-        // X 按可见样本序号均匀分布——到达时间有网络/定时器抖动，按到达时刻画会扭曲波形
+        // X=时间轴（引擎已把时间戳错开为严格递增，平移/缩放语义正确）
         g.fillStyle = color;
         const total = i1 - i0;
         const stride = total > 8000 ? Math.ceil(total / 8000) : 1;
-        const denom = Math.max(1, total - 1);
-        let ord = 0;
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + (ord / denom) * plotW;
+          const x = plotLeft + ((t - t0) / view.windowMs) * plotW;
           const y = yOf(engine.channels[ch].at(i));
           g.fillRect(x - 1.5, y - 1.5, 3, 3);
-          ord++;
         }
       } else {
-        // 曲线：X 按样本序号均匀分布（消除到达抖动扭曲），中点二次插值平滑，
-        // 超 2 万可见点按步长抽点保流畅
+        // 曲线：X=时间轴（与平移/缩放/时间窗语义一致），中点二次插值平滑，
+        // 超 2 万可见点按步长抽点保流畅。引擎层已把批量时间戳错开为严格递增，
+        // 到达抖动在秒级窗口内不可见。
         g.strokeStyle = color;
         g.lineWidth = 1.6;
         const total = i1 - i0;
         const stride = total > 20_000 ? Math.ceil(total / 20_000) : 1;
-        const denom = Math.max(1, total - 1);
         const pts: Array<[number, number]> = [];
-        let ord = 0;
-        for (let i = i0; i < i1; i++) {
+        for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
-          const x = plotLeft + (ord / denom) * plotW;
+          const x = plotLeft + ((t - t0) / view.windowMs) * plotW;
           pts.push([x, yOf(engine.channels[ch].at(i))]);
-          ord += stride; // 抽点时 X 仍按全部可见样本的序号推进，间距保持均匀
         }
         g.beginPath();
         if (pts.length === 1) {

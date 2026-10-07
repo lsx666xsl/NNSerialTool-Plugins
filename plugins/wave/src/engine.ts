@@ -107,7 +107,11 @@ export class WaveEngine {
   private ingest(f: WaveFrame) {
     this.ensureChannels(f.channels.length);
     for (let c = 0; c < f.channels.length; c++) this.channels[c].push(f.channels[c]);
-    this.t.push(f.t);
+    // 批量派发的帧共享同一时间戳——错开为严格递增（+1ms），保证时间轴单调且 X 唯一，
+    // 否则同批帧坍缩到同一点（表现为竖线/平移缩放时波形错位消失）
+    let t = f.t;
+    if (this.t.count > 0 && t <= this.t.at(this.t.count - 1)) t = this.t.at(this.t.count - 1) + 1;
+    this.t.push(t);
     if (f.seq !== undefined) {
       if (this.lastSeq >= 0) this.stats.drops += (f.seq - this.lastSeq - 1) & 0xff;
       this.lastSeq = f.seq;
