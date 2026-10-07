@@ -214,10 +214,7 @@ var MIN_WINDOW = 100;
 var MAX_WINDOW = 30 * 6e4;
 var AXIS_WIDTH = 64;
 var TIME_AXIS_H = 22;
-var OVERVIEW_H = 26;
-var PANE_OVERVIEW_H = 14;
 var MIN_PANE_H = 56;
-var SCROLL_W = 8;
 var lastYRanges = /* @__PURE__ */ new Map();
 var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 var niceStep = (range, targetLines) => {
@@ -266,9 +263,7 @@ var drawWave = (canvas, engine, view, colors) => {
     plotWidth: 0,
     panes: [],
     viewport: { top: 0, height: 0 },
-    overview: null,
-    paneOverviews: null,
-    scroll: null
+    layout: null
   };
   const zoom = Number(document.documentElement.style.zoom) || 1;
   const dpr = (window.devicePixelRatio || 1) * zoom;
@@ -285,11 +280,10 @@ var drawWave = (canvas, engine, view, colors) => {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.fillStyle = colors.bg;
   g.fillRect(0, 0, cssW, cssH);
-  const hasOverlayOverview = view.overview;
   const plotLeft = 8;
   const plotTop = 8;
   const plotRight = cssW - AXIS_WIDTH;
-  const plotBottom = cssH - TIME_AXIS_H - (hasOverlayOverview ? OVERVIEW_H + 6 : 0);
+  const plotBottom = cssH - TIME_AXIS_H;
   const plotW = plotRight - plotLeft;
   const viewportH = plotBottom - plotTop;
   const t1 = view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
@@ -305,9 +299,7 @@ var drawWave = (canvas, engine, view, colors) => {
     plotWidth: plotW,
     panes: [],
     viewport: { top: plotTop, height: viewportH },
-    overview: null,
-    paneOverviews: null,
-    scroll: null
+    layout: null
   };
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
@@ -331,35 +323,9 @@ var drawWave = (canvas, engine, view, colors) => {
   }
   const panes = view.overlay ? [{ ch: visIdx[0], top: plotTop, height: paneH }] : visIdx.map((ch, i) => ({ ch, top: plotTop - scrollOffset + paneH * i, height: paneH }));
   geom.panes = view.overlay ? [] : panes;
-  const fullT0 = engine.t.at(0);
-  const fullT1 = engine.lastT;
-  const drawOverlayOverview = hasOverlayOverview && view.overlay && fullT1 > fullT0;
-  if (drawOverlayOverview) {
-    geom.overview = { x: plotLeft, y: plotBottom + 4, w: plotW, h: OVERVIEW_H };
-  }
-  if (!view.overlay && view.overview && paneH >= 48 && fullT1 > fullT0) {
-    geom.paneOverviews = panes.map((p) => ({ p, barY: p.top + p.height - PANE_OVERVIEW_H - 2 })).filter(({ p, barY }) => barY >= plotTop && barY + PANE_OVERVIEW_H <= plotBottom).map(({ p, barY }) => ({
-      ch: p.ch,
-      top: p.top,
-      height: p.height,
-      x: plotLeft + 2,
-      y: barY,
-      w: plotW - 4,
-      h: PANE_OVERVIEW_H
-    }));
-  }
   if (scrollMax > 0) {
     const thumbH = Math.max(24, viewportH / contentHeight * viewportH);
-    const thumbY = plotTop + scrollOffset / scrollMax * (viewportH - thumbH);
-    geom.scroll = {
-      x: plotRight - SCROLL_W - 1,
-      y: plotTop,
-      w: SCROLL_W,
-      h: viewportH,
-      thumbY,
-      thumbH,
-      scrollMax
-    };
+    geom.layout = { trackH: viewportH, thumbH, scrollMax };
   }
   const px = (t) => plotLeft + (t - t0) / view.windowMs * plotW;
   for (const pane of panes) {
@@ -530,23 +496,6 @@ var drawWave = (canvas, engine, view, colors) => {
       }
     }
   }
-  if (geom.overview) {
-    drawOverviewBar(g, geom.overview, engine, i0, i1, fullT0, fullT1, visIdx, t0, t1, colors, null);
-  }
-  if (geom.paneOverviews) {
-    for (const bar of geom.paneOverviews) {
-      drawOverviewBar(g, bar, engine, i0, i1, fullT0, fullT1, [bar.ch], t0, t1, colors, colors.palette[bar.ch % colors.palette.length]);
-    }
-  }
-  if (geom.scroll) {
-    const s = geom.scroll;
-    g.fillStyle = colors.grid;
-    rr(g, s.x + 1, s.y + 1, s.w - 2, s.h - 2, 4);
-    g.fill();
-    g.fillStyle = colors.textDim;
-    rr(g, s.x + 1, s.thumbY + 1, s.w - 2, s.thumbH - 2, 4);
-    g.fill();
-  }
   drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
   for (const c of [view.cursorA, view.cursorB]) {
     if (c === null || c < t0 || c > t1) continue;
@@ -561,22 +510,44 @@ var drawWave = (canvas, engine, view, colors) => {
   }
   return geom;
 };
-var drawOverviewBar = (g, bar, engine, i0, i1, fullT0, fullT1, channels, t0, t1, colors, singleColor) => {
+var drawOverviewCanvas = (canvas, engine, view, colors) => {
+  const zoom = Number(document.documentElement.style.zoom) || 1;
+  const dpr = (window.devicePixelRatio || 1) * zoom;
+  const cssW = canvas.clientWidth;
+  const cssH = canvas.clientHeight;
+  const g = canvas.getContext("2d");
+  if (!g || cssW < 10 || cssH < 8) return null;
+  const W = Math.round(cssW * dpr);
+  const H = Math.round(cssH * dpr);
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.fillStyle = colors.panel;
-  rr(g, bar.x + 0.5, bar.y + 0.5, bar.w - 1, bar.h - 1, 4);
+  rr(g, 0.5, 0.5, cssW - 1, cssH - 1, 4);
   g.fill();
   g.strokeStyle = colors.border;
   g.lineWidth = 1;
   g.stroke();
-  const cols = Math.max(1, Math.floor(bar.w));
+  if (engine.t.count < 2 || engine.lastT <= engine.t.at(0)) return null;
+  const fullT0 = engine.t.at(0);
+  const fullT1 = engine.lastT;
+  const visIdx = [];
+  engine.channels.forEach((_, i) => {
+    if (engine.visible[i]) visIdx.push(i);
+  });
+  const i0 = engine.lowerBound(fullT0);
+  const i1 = engine.t.count;
+  const cols = Math.max(1, Math.floor(cssW));
   ensureOverviewBuf(cols);
   const mins = ovMins;
   const maxs = ovMaxs;
   const visible = i1 - i0;
-  const stride = visible > 6e5 ? Math.ceil(visible / Math.max(1e3, Math.floor(6e5 / channels.length))) : 1;
-  const barInnerY = bar.y + 2;
-  const barInnerH = bar.h - 4;
-  for (const ch of channels) {
+  const stride = visible > 6e5 ? Math.ceil(visible / Math.max(1e3, Math.floor(6e5 / visIdx.length))) : 1;
+  const innerY = 2;
+  const innerH = cssH - 4;
+  for (const ch of visIdx) {
     mins.fill(Infinity, 0, cols);
     maxs.fill(-Infinity, 0, cols);
     let lo = Infinity;
@@ -592,27 +563,27 @@ var drawOverviewBar = (g, bar, engine, i0, i1, fullT0, fullT1, channels, t0, t1,
       if (v > hi) hi = v;
     }
     if (!isFinite(lo) || !isFinite(hi) || hi <= lo) continue;
-    const yOf = (v) => barInnerY + barInnerH - (v - lo) / (hi - lo) * barInnerH;
-    g.fillStyle = singleColor ?? colors.palette[ch % colors.palette.length];
-    g.globalAlpha = singleColor ? 0.55 : 0.6;
+    const yOf = (v) => innerY + innerH - (v - lo) / (hi - lo) * innerH;
+    g.fillStyle = colors.palette[ch % colors.palette.length];
+    g.globalAlpha = 0.6;
     for (let col = 0; col < cols; col++) {
       if (mins[col] > maxs[col]) continue;
-      const x = bar.x + col;
       const yTop = yOf(maxs[col]);
-      g.fillRect(x, yTop, 1, Math.max(1, yOf(mins[col]) - yTop));
+      g.fillRect(col, yTop, 1, Math.max(1, yOf(mins[col]) - yTop));
     }
     g.globalAlpha = 1;
   }
-  const wx0 = bar.x + (t0 - fullT0) / (fullT1 - fullT0) * bar.w;
-  const wx1 = bar.x + (t1 - fullT0) / (fullT1 - fullT0) * bar.w;
-  const clampedX0 = clamp(Math.min(wx0, wx1), bar.x, bar.x + bar.w);
-  const clampedX1 = clamp(Math.max(wx0, wx1), bar.x, bar.x + bar.w);
+  const wx0 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - view.windowMs - fullT0) / (fullT1 - fullT0) * cssW;
+  const wx1 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - fullT0) / (fullT1 - fullT0) * cssW;
+  const clampedX0 = clamp(Math.min(wx0, wx1), 0, cssW);
+  const clampedX1 = clamp(Math.max(wx0, wx1), 0, cssW);
   g.fillStyle = colors.accent;
   g.globalAlpha = 0.14;
-  g.fillRect(clampedX0, bar.y + 1, clampedX1 - clampedX0, bar.h - 2);
+  g.fillRect(clampedX0, 1, clampedX1 - clampedX0, cssH - 2);
   g.globalAlpha = 1;
   g.strokeStyle = colors.accent;
-  g.strokeRect(clampedX0 + 0.5, bar.y + 1.5, Math.max(1, clampedX1 - clampedX0 - 1), bar.h - 3);
+  g.strokeRect(clampedX0 + 0.5, 1.5, Math.max(1, clampedX1 - clampedX0 - 1), cssH - 3);
+  return { fullT0, fullT1 };
 };
 var drawEmpty = (g, x, y, w, h, colors) => {
   g.fillStyle = colors.textDim;
@@ -1303,9 +1274,22 @@ var CSS = `
 .theme-dark .wavep-btn.active { background:rgba(108,167,232,.2); color:#8fbdf7; }
 .theme-dark .wavep-btn.follow { background:rgba(107,201,126,.16); color:#6bc97e; }
 .wavep-export { margin-left:auto; }
-.wavep-wrap { flex:1; min-height:200px; position:relative;
+/* 波形主体：画布 + 画布外纵向通道滚动条（DOM，可拖/点跳/滚轮） */
+.wavep-main { display:flex; gap:4px; flex:1; min-height:200px; }
+.wavep-wrap { flex:1; min-width:0; position:relative;
   border:1px solid rgba(23,26,33,.1); border-radius:6px; overflow:hidden; }
 .theme-dark .wavep-wrap { border-color:rgba(255,255,255,.09); }
+.wavep-vscroll { width:10px; position:relative; border-radius:5px; cursor:pointer;
+  background:rgba(23,26,33,.06); }
+.wavep-vthumb { position:absolute; left:1px; width:8px; min-height:24px; border-radius:4px;
+  background:rgba(128,132,140,.55); }
+.wavep-vthumb:hover, .wavep-vthumb.dragging { background:rgba(59,111,212,.65); }
+.theme-dark .wavep-vscroll { background:rgba(255,255,255,.06); }
+.theme-dark .wavep-vthumb { background:rgba(160,166,175,.6); }
+.theme-dark .wavep-vthumb:hover, .theme-dark .wavep-vthumb.dragging { background:rgba(108,167,232,.75); }
+/* 总览条：画布外独立 mini canvas（整段时间缩影 + 视窗框） */
+.wavep-ovcanvas { display:block; width:100%; height:30px; flex-shrink:0; cursor:grab; }
+.wavep-ovcanvas:active { cursor:grabbing; }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
 .wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; align-content:flex-start;
   max-height:136px; overflow-y:auto; scrollbar-width:thin;
@@ -1413,13 +1397,20 @@ var mountWave = (el, ctx) => {
         <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
         <button type="button" class="wavep-btn wavep-export-loglib">导出日志库</button>
       </div>
-      <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
+      <div class="wavep-main">
+        <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
+        <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
+      </div>
+      <canvas class="wavep-ovcanvas" style="display:none" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
     </div>`;
   const root = el.querySelector(".wavep");
   const canvas = el.querySelector(".wavep-canvas");
   const wrap = el.querySelector(".wavep-wrap");
+  const vscroll = el.querySelector(".wavep-vscroll");
+  const vthumb = el.querySelector(".wavep-vthumb");
+  const ovCanvas = el.querySelector(".wavep-ovcanvas");
   const sourceSel = el.querySelector(".wavep-source");
   const btnOverlay = el.querySelector(".wavep-overlay");
   const btnOverview = el.querySelector(".wavep-overviewbtn");
@@ -1739,25 +1730,19 @@ var mountWave = (el, ctx) => {
     plotWidth: 1,
     panes: [],
     viewport: { top: 0, height: 0 },
-    overview: null,
-    paneOverviews: null,
-    scroll: null
+    layout: null
   };
   const inPlot = (x) => x >= geom.plotLeft && x <= geom.plotLeft + geom.plotWidth;
   const timeAtX = (x) => geom.t0 + (x - geom.plotLeft) / geom.plotWidth * view.windowMs;
   const currentT1 = () => view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
-  const hitScrollbar = (x, y) => geom.scroll && x >= geom.scroll.x - 3 && x <= geom.scroll.x + geom.scroll.w + 3 && y >= geom.scroll.y && y <= geom.scroll.y + geom.scroll.h ? geom.scroll : null;
-  const hitOverview = (x, y) => {
-    const inRect = (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-    if (geom.overview && inRect(geom.overview)) return geom.overview;
-    const paneBar = geom.paneOverviews?.find((r) => inRect(r));
-    return paneBar ?? null;
-  };
-  const overviewTAt = (bar, x) => {
-    const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
-    const fullT1 = engine.lastT;
-    const frac = clamp((x - bar.x) / (bar.w || 1), 0, 1);
-    return fullT0 + frac * (fullT1 - fullT0);
+  let ovRange = null;
+  const ovPointer = (e) => {
+    const rect = ovCanvas.getBoundingClientRect();
+    const scale = rect.width / (ovCanvas.clientWidth || 1);
+    const x = (e.clientX - rect.left) / scale;
+    if (!ovRange) return null;
+    const frac = Math.min(1, Math.max(0, x / (ovCanvas.clientWidth || 1)));
+    return { x, t: ovRange.fullT0 + frac * (ovRange.fullT1 - ovRange.fullT0) };
   };
   const clampWindow = (rightT, windowMs) => {
     const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -1790,14 +1775,7 @@ var mountWave = (el, ctx) => {
     (e) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
-      const sb = hitScrollbar(x, y);
-      if (sb) {
-        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, sb.scrollMax);
-        markDirty();
-        return;
-      }
-      const ov = hitOverview(x, y);
-      if (!inPlot(x) && !ov) return;
+      if (!inPlot(x)) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {
         scaleY(findPaneChannel(y), factor);
@@ -1805,7 +1783,7 @@ var mountWave = (el, ctx) => {
       }
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
       view.windowMs = newWindow;
-      const tAt = ov ? overviewTAt(ov, x) : timeAtX(x);
+      const tAt = timeAtX(x);
       const rightEdge = geom.plotLeft + geom.plotWidth;
       const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
       const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -1821,48 +1799,6 @@ var mountWave = (el, ctx) => {
   canvas.addEventListener("pointerdown", (e) => {
     const { x, y } = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
-    const sb = hitScrollbar(x, y);
-    if (sb) {
-      const inThumb = y >= sb.thumbY && y <= sb.thumbY + sb.thumbH;
-      if (inThumb) {
-        const ratio = sb.h - sb.thumbH > 0 ? sb.scrollMax / (sb.h - sb.thumbH) : 0;
-        drag = { kind: "scroll", startY: y, startScroll: view.paneScroll, ratio };
-      } else {
-        const page = geom.viewport.height * (y < sb.thumbY ? -0.9 : 0.9);
-        view.paneScroll = clamp(view.paneScroll + page, 0, sb.scrollMax);
-        markDirty();
-      }
-      return;
-    }
-    const ov = hitOverview(x, y);
-    if (ov) {
-      const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
-      const fullRange = engine.lastT - fullT0 || 1;
-      const winL = ov.x + (geom.t0 - fullT0) / fullRange * ov.w;
-      const winR = ov.x + (geom.t1 - fullT0) / fullRange * ov.w;
-      const tAt = overviewTAt(ov, x);
-      if (Math.abs(x - winL) <= 5 && winR - winL > 12) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: "ov-left", bar: ov, anchorT: currentT1() };
-      } else if (Math.abs(x - winR) <= 5 && winR - winL > 12) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: "ov-right", bar: ov, anchorT: geom.t0 };
-      } else if (x > winL && x < winR) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: "ov-pan", bar: ov, startX: x, startRightT: currentT1() };
-      } else {
-        const { rightT, follow } = clampWindow(tAt + view.windowMs / 2, view.windowMs);
-        view.rightT = rightT;
-        view.follow = follow;
-        view.frozen = false;
-        updateButtons();
-      }
-      markDirty();
-      return;
-    }
     if (x <= geom.plotLeft + 4) {
       const ch = findPaneChannel(y);
       const base = (ch !== null ? view.yRanges.get(ch) : void 0) ?? (ch !== null ? lastYRanges.get(ch) : void 0);
@@ -1892,28 +1828,9 @@ var mountWave = (el, ctx) => {
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
     } else if (drag.kind === "scroll") {
-      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, geom.scroll?.scrollMax ?? 0);
-    } else if (drag.kind === "ov-pan") {
-      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
-      const dt = (x - drag.startX) / (drag.bar.w || 1) * (engine.lastT - firstT);
-      const { rightT, follow } = clampWindow(drag.startRightT - dt, view.windowMs);
-      view.rightT = rightT;
-      view.follow = follow;
-      if (view.follow) view.rightT = engine.lastT;
-    } else if (drag.kind === "ov-left") {
-      const tAt = overviewTAt(drag.bar, x);
-      const w = clamp(drag.anchorT - tAt, MIN_WINDOW, MAX_WINDOW);
-      view.windowMs = w;
-      view.rightT = drag.anchorT;
-      view.follow = false;
-      view.frozen = false;
-    } else if (drag.kind === "ov-right") {
-      const tAt = overviewTAt(drag.bar, x);
-      const w = clamp(tAt - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
-      view.windowMs = w;
-      view.rightT = clampWindow(tAt, w).rightT;
-      view.follow = false;
-      view.frozen = false;
+      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, drag.scrollMax);
+    } else if (drag.kind === "ov-pan" || drag.kind === "ov-left" || drag.kind === "ov-right") {
+      return;
     } else {
       const factor = Math.exp((y - drag.startY) * 5e-3);
       const center = (drag.base.min + drag.base.max) / 2;
@@ -1930,6 +1847,150 @@ var mountWave = (el, ctx) => {
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
+  const syncVScroll = () => {
+    const layout = geom.layout;
+    vscroll.style.display = layout ? "" : "none";
+    if (!layout) return;
+    const trackH = vscroll.clientHeight || 1;
+    const thumbH = Math.max(24, Math.min(trackH, layout.thumbH));
+    const y = view.paneScroll / layout.scrollMax * (trackH - thumbH);
+    vthumb.style.height = `${thumbH}px`;
+    vthumb.style.top = `${y}px`;
+  };
+  vscroll.addEventListener("pointerdown", (e) => {
+    const layout = geom.layout;
+    if (!layout) return;
+    e.preventDefault();
+    vscroll.setPointerCapture(e.pointerId);
+    const rect = vscroll.getBoundingClientRect();
+    const scale = rect.height / (vscroll.clientHeight || 1);
+    const yLayout = (e.clientY - rect.top) / scale;
+    const trackH = vscroll.clientHeight;
+    const thumbH = Math.max(24, Math.min(trackH, layout.thumbH));
+    const thumbY = view.paneScroll / layout.scrollMax * (trackH - thumbH);
+    const inThumb = yLayout >= thumbY && yLayout <= thumbY + thumbH;
+    let ratio = layout.scrollMax / (trackH - thumbH || 1);
+    let startY = yLayout;
+    let startScroll = view.paneScroll;
+    if (!inThumb) {
+      startScroll = clamp((yLayout - thumbH / 2) / (trackH - thumbH || 1) * layout.scrollMax, 0, layout.scrollMax);
+      view.paneScroll = startScroll;
+      startY = yLayout;
+    }
+    drag = { kind: "scroll", startY, startScroll, ratio, scrollMax: layout.scrollMax };
+    vthumb.classList.add("dragging");
+    markDirty();
+  });
+  vscroll.addEventListener("pointermove", (e) => {
+    if (!drag || drag.kind !== "scroll") return;
+    const rect = vscroll.getBoundingClientRect();
+    const scale = rect.height / (vscroll.clientHeight || 1);
+    const yLayout = (e.clientY - rect.top) / scale;
+    view.paneScroll = clamp(drag.startScroll + (yLayout - drag.startY) * drag.ratio, 0, drag.scrollMax);
+    markDirty();
+  });
+  const endVScroll = (e) => {
+    if (vscroll.hasPointerCapture(e.pointerId)) vscroll.releasePointerCapture(e.pointerId);
+    if (drag?.kind === "scroll") {
+      drag = null;
+      vthumb.classList.remove("dragging");
+      markDirty();
+    }
+  };
+  vscroll.addEventListener("pointerup", endVScroll);
+  vscroll.addEventListener("pointercancel", endVScroll);
+  vscroll.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      if (!geom.layout) return;
+      view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+      markDirty();
+    },
+    { passive: false }
+  );
+  const OV_EDGE = 6;
+  const ovSetWindow = (rightT, windowMs) => {
+    const { rightT: r, follow } = clampWindow(rightT, windowMs);
+    view.rightT = r;
+    view.follow = follow;
+    view.frozen = false;
+  };
+  ovCanvas.addEventListener("pointerdown", (e) => {
+    const pos = ovPointer(e);
+    if (!pos || !ovRange) return;
+    e.preventDefault();
+    ovCanvas.setPointerCapture(e.pointerId);
+    const cssW = ovCanvas.clientWidth || 1;
+    const range = ovRange.fullT1 - ovRange.fullT0 || 1;
+    const winL = (geom.t1 - view.windowMs - ovRange.fullT0) / range * cssW;
+    const winR = (geom.t1 - ovRange.fullT0) / range * cssW;
+    if (Math.abs(pos.x - winL) <= OV_EDGE && winR - winL > 12) {
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: "ov-left", anchorT: currentT1() };
+    } else if (Math.abs(pos.x - winR) <= OV_EDGE && winR - winL > 12) {
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: "ov-right", anchorT: geom.t0 };
+    } else if (pos.x > winL && pos.x < winR) {
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: "ov-pan", grabT: pos.t, startRightT: currentT1() };
+    } else {
+      ovSetWindow(pos.t + view.windowMs / 2, view.windowMs);
+      updateButtons();
+    }
+    markDirty();
+  });
+  ovCanvas.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const pos = ovPointer(e);
+    if (!pos || !ovRange) return;
+    if (drag.kind === "ov-pan") {
+      ovSetWindow(drag.startRightT - (pos.t - drag.grabT), view.windowMs);
+      if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === "ov-left") {
+      const w = clamp(drag.anchorT - pos.t, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      ovSetWindow(drag.anchorT, w);
+      view.follow = false;
+    } else if (drag.kind === "ov-right") {
+      const w = clamp(pos.t - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      ovSetWindow(pos.t, w);
+      view.follow = false;
+    } else return;
+    updateButtons();
+    markDirty();
+  });
+  const endOvDrag = (e) => {
+    if (ovCanvas.hasPointerCapture(e.pointerId)) ovCanvas.releasePointerCapture(e.pointerId);
+    if (drag?.kind === "ov-pan" || drag?.kind === "ov-left" || drag?.kind === "ov-right") {
+      drag = null;
+      updateButtons();
+      markDirty();
+    }
+  };
+  ovCanvas.addEventListener("pointerup", endOvDrag);
+  ovCanvas.addEventListener("pointercancel", endOvDrag);
+  ovCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const pos = ovPointer(e);
+      if (!pos) return;
+      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      const oldWindow = view.windowMs;
+      const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, oldWindow * factor));
+      const anchoredRight = pos.t + (currentT1() - pos.t) * (newWindow / oldWindow);
+      view.windowMs = newWindow;
+      ovSetWindow(anchoredRight, newWindow);
+      updateButtons();
+      markDirty();
+    },
+    { passive: false }
+  );
   canvas.addEventListener("dblclick", () => {
     view.follow = true;
     view.frozen = false;
@@ -1943,8 +2004,8 @@ var mountWave = (el, ctx) => {
   });
   canvas.addEventListener("click", (e) => {
     if (!cursorMode) return;
-    const { x, y } = pointerPos(e);
-    if (!inPlot(x) || hitScrollbar(x, y) || hitOverview(x, y)) return;
+    const { x } = pointerPos(e);
+    if (!inPlot(x)) return;
     const t = timeAtX(x);
     const px = (c) => geom.plotLeft + (c - geom.t0) / view.windowMs * geom.plotWidth;
     if (view.cursorA === null) view.cursorA = t;
@@ -2053,6 +2114,14 @@ var mountWave = (el, ctx) => {
       lastDrawnVersion = engine.version;
       viewDirty = false;
       geom = drawWave(canvas, engine, view, buildColors());
+      if (view.overview) {
+        ovCanvas.style.display = "";
+        ovRange = drawOverviewCanvas(ovCanvas, engine, view, buildColors());
+      } else {
+        ovCanvas.style.display = "none";
+        ovRange = null;
+      }
+      syncVScroll();
     }
   };
   const loop = (now) => {

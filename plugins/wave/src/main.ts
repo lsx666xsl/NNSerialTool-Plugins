@@ -6,14 +6,13 @@ import { WaveEngine } from './engine';
 import {
   clamp,
   defaultViewState,
+  drawOverviewCanvas,
   drawWave,
   fmtDuration,
   fmtValue,
   lastYRanges,
   MAX_WINDOW,
   MIN_WINDOW,
-  type Rect,
-  type ScrollGeom,
   type ViewState,
   type WaveGeom,
   type YRange,
@@ -45,9 +44,22 @@ const CSS = `
 .theme-dark .wavep-btn.active { background:rgba(108,167,232,.2); color:#8fbdf7; }
 .theme-dark .wavep-btn.follow { background:rgba(107,201,126,.16); color:#6bc97e; }
 .wavep-export { margin-left:auto; }
-.wavep-wrap { flex:1; min-height:200px; position:relative;
+/* 波形主体：画布 + 画布外纵向通道滚动条（DOM，可拖/点跳/滚轮） */
+.wavep-main { display:flex; gap:4px; flex:1; min-height:200px; }
+.wavep-wrap { flex:1; min-width:0; position:relative;
   border:1px solid rgba(23,26,33,.1); border-radius:6px; overflow:hidden; }
 .theme-dark .wavep-wrap { border-color:rgba(255,255,255,.09); }
+.wavep-vscroll { width:10px; position:relative; border-radius:5px; cursor:pointer;
+  background:rgba(23,26,33,.06); }
+.wavep-vthumb { position:absolute; left:1px; width:8px; min-height:24px; border-radius:4px;
+  background:rgba(128,132,140,.55); }
+.wavep-vthumb:hover, .wavep-vthumb.dragging { background:rgba(59,111,212,.65); }
+.theme-dark .wavep-vscroll { background:rgba(255,255,255,.06); }
+.theme-dark .wavep-vthumb { background:rgba(160,166,175,.6); }
+.theme-dark .wavep-vthumb:hover, .theme-dark .wavep-vthumb.dragging { background:rgba(108,167,232,.75); }
+/* 总览条：画布外独立 mini canvas（整段时间缩影 + 视窗框） */
+.wavep-ovcanvas { display:block; width:100%; height:30px; flex-shrink:0; cursor:grab; }
+.wavep-ovcanvas:active { cursor:grabbing; }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
 .wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; align-content:flex-start;
   max-height:136px; overflow-y:auto; scrollbar-width:thin;
@@ -163,7 +175,11 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
         <button type="button" class="wavep-btn wavep-export-loglib">导出日志库</button>
       </div>
-      <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
+      <div class="wavep-main">
+        <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
+        <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
+      </div>
+      <canvas class="wavep-ovcanvas" style="display:none" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
     </div>`;
@@ -171,6 +187,9 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const root = el.querySelector('.wavep') as HTMLElement;
   const canvas = el.querySelector('.wavep-canvas') as HTMLCanvasElement;
   const wrap = el.querySelector('.wavep-wrap') as HTMLElement;
+  const vscroll = el.querySelector('.wavep-vscroll') as HTMLElement;
+  const vthumb = el.querySelector('.wavep-vthumb') as HTMLElement;
+  const ovCanvas = el.querySelector('.wavep-ovcanvas') as HTMLCanvasElement;
   const sourceSel = el.querySelector('.wavep-source') as HTMLSelectElement;
   const btnOverlay = el.querySelector('.wavep-overlay') as HTMLButtonElement;
   const btnOverview = el.querySelector('.wavep-overviewbtn') as HTMLButtonElement;
@@ -540,31 +559,21 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     plotWidth: 1,
     panes: [],
     viewport: { top: 0, height: 0 },
-    overview: null,
-    paneOverviews: null,
-    scroll: null,
+    layout: null,
   };
   const inPlot = (x: number) => x >= geom.plotLeft && x <= geom.plotLeft + geom.plotWidth;
   const timeAtX = (x: number) => geom.t0 + ((x - geom.plotLeft) / geom.plotWidth) * view.windowMs;
   const currentT1 = () => (view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT);
 
-  // ---------- 总览条 / 纵向滚动条命中与换算 ----------
-  const hitScrollbar = (x: number, y: number): ScrollGeom | null =>
-    geom.scroll && x >= geom.scroll.x - 3 && x <= geom.scroll.x + geom.scroll.w + 3 && y >= geom.scroll.y && y <= geom.scroll.y + geom.scroll.h
-      ? geom.scroll
-      : null;
-  const hitOverview = (x: number, y: number): Rect | null => {
-    const inRect = (r: Rect) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-    if (geom.overview && inRect(geom.overview)) return geom.overview;
-    const paneBar = geom.paneOverviews?.find((r) => inRect(r));
-    return paneBar ?? null;
-  };
-  // 总览条内 x → 全时间范围时间
-  const overviewTAt = (bar: Rect, x: number): number => {
-    const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
-    const fullT1 = engine.lastT;
-    const frac = clamp((x - bar.x) / (bar.w || 1), 0, 1);
-    return fullT0 + frac * (fullT1 - fullT0);
+  // ---------- 画布外控件：总览条（共享时间窗）与纵向通道滚动条 ----------
+  let ovRange: { fullT0: number; fullT1: number } | null = null; // draw 循环内同步
+  const ovPointer = (e: PointerEvent | WheelEvent): { x: number; t: number } | null => {
+    const rect = ovCanvas.getBoundingClientRect();
+    const scale = rect.width / (ovCanvas.clientWidth || 1);
+    const x = (e.clientX - rect.left) / scale;
+    if (!ovRange) return null;
+    const frac = Math.min(1, Math.max(0, x / (ovCanvas.clientWidth || 1)));
+    return { x, t: ovRange.fullT0 + frac * (ovRange.fullT1 - ovRange.fullT0) };
   };
   // 视窗钳制：右缘不超出最新数据、左缘不早于数据起点（拖不出空白区）
   const clampWindow = (rightT: number, windowMs: number): { rightT: number; follow: boolean } => {
@@ -602,15 +611,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     (e: WheelEvent) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
-      // 分栏纵向滚动条：滚轮直接滚动通道列表（不缩放时间窗）
-      const sb = hitScrollbar(x, y);
-      if (sb) {
-        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, sb.scrollMax);
-        markDirty();
-        return;
-      }
-      const ov = hitOverview(x, y);
-      if (!inPlot(x) && !ov) return;
+      if (!inPlot(x)) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {
         scaleY(findPaneChannel(y), factor);
@@ -621,7 +622,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       // 缩放一律以光标为锚点（用户要求的标准示波器交互）：
       // 右缘钳制在数据范围内（拖不出空白未来）；光标区域放大后视图停在原地，
       // 拖回最右或点「回到最新」即恢复实时跟随
-      const tAt = ov ? overviewTAt(ov, x) : timeAtX(x);
+      const tAt = timeAtX(x);
       const rightEdge = geom.plotLeft + geom.plotWidth;
       const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
       const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -640,64 +641,16 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     | { kind: 'pan'; startX: number; startRightT: number }
     | { kind: 'yscale'; ch: number | null; startY: number; base: YRange }
     // 总览条：拖窗平移 / 拖左右缘缩放
-    | { kind: 'ov-pan'; bar: Rect; startX: number; startRightT: number }
-    | { kind: 'ov-left'; bar: Rect; anchorT: number }
-    | { kind: 'ov-right'; bar: Rect; anchorT: number }
+    | { kind: 'ov-pan'; grabT: number; startRightT: number }
+    | { kind: 'ov-left'; anchorT: number }
+    | { kind: 'ov-right'; anchorT: number }
     // 纵向滚动条 thumb 拖动（ratio = scrollMax / thumb 可行程）
-    | { kind: 'scroll'; startY: number; startScroll: number; ratio: number };
+    | { kind: 'scroll'; startY: number; startScroll: number; ratio: number; scrollMax: number };
   let drag: DragState | null = null;
 
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
     const { x, y } = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
-
-    // 1) 纵向滚动条：thumb 上按下=拖动；轨道空白=按页滚动
-    const sb = hitScrollbar(x, y);
-    if (sb) {
-      const inThumb = y >= sb.thumbY && y <= sb.thumbY + sb.thumbH;
-      if (inThumb) {
-        const ratio = sb.h - sb.thumbH > 0 ? sb.scrollMax / (sb.h - sb.thumbH) : 0;
-        drag = { kind: 'scroll', startY: y, startScroll: view.paneScroll, ratio };
-      } else {
-        const page = geom.viewport.height * (y < sb.thumbY ? -0.9 : 0.9);
-        view.paneScroll = clamp(view.paneScroll + page, 0, sb.scrollMax);
-        markDirty();
-      }
-      return;
-    }
-
-    // 2) 总览条：拖窗平移 / 边缘缩放 / 空白点击跳转
-    const ov = hitOverview(x, y);
-    if (ov) {
-      const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
-      const fullRange = engine.lastT - fullT0 || 1;
-      const winL = ov.x + ((geom.t0 - fullT0) / fullRange) * ov.w;
-      const winR = ov.x + ((geom.t1 - fullT0) / fullRange) * ov.w;
-      const tAt = overviewTAt(ov, x);
-      if (Math.abs(x - winL) <= 5 && winR - winL > 12) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: 'ov-left', bar: ov, anchorT: currentT1() };
-      } else if (Math.abs(x - winR) <= 5 && winR - winL > 12) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: 'ov-right', bar: ov, anchorT: geom.t0 };
-      } else if (x > winL && x < winR) {
-        view.frozen = false;
-        view.follow = false;
-        drag = { kind: 'ov-pan', bar: ov, startX: x, startRightT: currentT1() };
-      } else {
-        // 空白点击：窗口中心跳到该时间点
-        const { rightT, follow } = clampWindow(tAt + view.windowMs / 2, view.windowMs);
-        view.rightT = rightT;
-        view.follow = follow;
-        view.frozen = false;
-        updateButtons();
-      }
-      markDirty();
-      return;
-    }
-
     if (x <= geom.plotLeft + 4) {
       const ch = findPaneChannel(y);
       const base = (ch !== null ? view.yRanges.get(ch) : undefined) ?? (ch !== null ? lastYRanges.get(ch) : undefined);
@@ -731,30 +684,9 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
     } else if (drag.kind === 'scroll') {
-      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, geom.scroll?.scrollMax ?? 0);
-    } else if (drag.kind === 'ov-pan') {
-      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
-      const dt = ((x - drag.startX) / (drag.bar.w || 1)) * (engine.lastT - firstT);
-      const { rightT, follow } = clampWindow(drag.startRightT - dt, view.windowMs);
-      view.rightT = rightT;
-      view.follow = follow;
-      if (view.follow) view.rightT = engine.lastT;
-    } else if (drag.kind === 'ov-left') {
-      // 拖左缘：右缘固定在 anchorT，窗口宽 = anchorT - 光标时间
-      const tAt = overviewTAt(drag.bar, x);
-      const w = clamp(drag.anchorT - tAt, MIN_WINDOW, MAX_WINDOW);
-      view.windowMs = w;
-      view.rightT = drag.anchorT;
-      view.follow = false;
-      view.frozen = false;
-    } else if (drag.kind === 'ov-right') {
-      // 拖右缘：左缘固定在 anchorT，窗口宽 = 光标时间 - anchorT
-      const tAt = overviewTAt(drag.bar, x);
-      const w = clamp(tAt - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
-      view.windowMs = w;
-      view.rightT = clampWindow(tAt, w).rightT;
-      view.follow = false;
-      view.frozen = false;
+      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, drag.scrollMax);
+    } else if (drag.kind === 'ov-pan' || drag.kind === 'ov-left' || drag.kind === 'ov-right') {
+      return; // 总览条拖动由 ovCanvas 自己的监听处理（capture 在它身上）
     } else {
       // yscale：绘图区左缘拖动 = 纵向幅值缩放
       const factor = Math.exp((y - drag.startY) * 0.005);
@@ -777,6 +709,161 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
 
+  // ---------- 纵向通道滚动条（画布外 DOM）：拖 thumb / 点轨道跳转 / 滚轮 ----------
+  const syncVScroll = () => {
+    const layout = geom.layout;
+    vscroll.style.display = layout ? '' : 'none';
+    if (!layout) return;
+    const trackH = vscroll.clientHeight || 1;
+    const thumbH = Math.max(24, Math.min(trackH, layout.thumbH));
+    const y = (view.paneScroll / layout.scrollMax) * (trackH - thumbH);
+    vthumb.style.height = `${thumbH}px`;
+    vthumb.style.top = `${y}px`;
+  };
+  vscroll.addEventListener('pointerdown', (e: PointerEvent) => {
+    const layout = geom.layout;
+    if (!layout) return;
+    e.preventDefault();
+    vscroll.setPointerCapture(e.pointerId);
+    const rect = vscroll.getBoundingClientRect();
+    const scale = rect.height / (vscroll.clientHeight || 1);
+    const yLayout = (e.clientY - rect.top) / scale;
+    const trackH = vscroll.clientHeight;
+    const thumbH = Math.max(24, Math.min(trackH, layout.thumbH));
+    const thumbY = (view.paneScroll / layout.scrollMax) * (trackH - thumbH);
+    const inThumb = yLayout >= thumbY && yLayout <= thumbY + thumbH;
+    let ratio = layout.scrollMax / (trackH - thumbH || 1);
+    let startY = yLayout;
+    let startScroll = view.paneScroll;
+    if (!inThumb) {
+      // 点轨道空白：thumb 中心跳到点击处，随即可继续拖动
+      startScroll = clamp((yLayout - thumbH / 2) / (trackH - thumbH || 1) * layout.scrollMax, 0, layout.scrollMax);
+      view.paneScroll = startScroll;
+      startY = yLayout;
+    }
+    drag = { kind: 'scroll', startY, startScroll, ratio, scrollMax: layout.scrollMax };
+    vthumb.classList.add('dragging');
+    markDirty();
+  });
+  vscroll.addEventListener('pointermove', (e: PointerEvent) => {
+    if (!drag || drag.kind !== 'scroll') return;
+    const rect = vscroll.getBoundingClientRect();
+    const scale = rect.height / (vscroll.clientHeight || 1);
+    const yLayout = (e.clientY - rect.top) / scale;
+    view.paneScroll = clamp(drag.startScroll + (yLayout - drag.startY) * drag.ratio, 0, drag.scrollMax);
+    markDirty();
+  });
+  const endVScroll = (e: PointerEvent) => {
+    if (vscroll.hasPointerCapture(e.pointerId)) vscroll.releasePointerCapture(e.pointerId);
+    if (drag?.kind === 'scroll') {
+      drag = null;
+      vthumb.classList.remove('dragging');
+      markDirty();
+    }
+  };
+  vscroll.addEventListener('pointerup', endVScroll);
+  vscroll.addEventListener('pointercancel', endVScroll);
+  vscroll.addEventListener(
+    'wheel',
+    (e: WheelEvent) => {
+      e.preventDefault();
+      if (!geom.layout) return;
+      view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+      markDirty();
+    },
+    { passive: false }
+  );
+
+  // ---------- 总览条（画布外 mini canvas）：拖窗平移 / 拖边缩放 / 点空白跳转 ----------
+  const OV_EDGE = 6; // 左右缘可拖缩放的命中宽度
+  const ovSetWindow = (rightT: number, windowMs: number) => {
+    const { rightT: r, follow } = clampWindow(rightT, windowMs);
+    view.rightT = r;
+    view.follow = follow;
+    view.frozen = false;
+  };
+  ovCanvas.addEventListener('pointerdown', (e: PointerEvent) => {
+    const pos = ovPointer(e);
+    if (!pos || !ovRange) return;
+    e.preventDefault();
+    ovCanvas.setPointerCapture(e.pointerId);
+    const cssW = ovCanvas.clientWidth || 1;
+    const range = ovRange.fullT1 - ovRange.fullT0 || 1;
+    const winL = ((geom.t1 - view.windowMs - ovRange.fullT0) / range) * cssW;
+    const winR = ((geom.t1 - ovRange.fullT0) / range) * cssW;
+    if (Math.abs(pos.x - winL) <= OV_EDGE && winR - winL > 12) {
+      // 拖左缘：右缘固定，窗口宽 = 右缘 - 光标时间
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: 'ov-left', anchorT: currentT1() };
+    } else if (Math.abs(pos.x - winR) <= OV_EDGE && winR - winL > 12) {
+      // 拖右缘：左缘固定在当前窗口左缘
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: 'ov-right', anchorT: geom.t0 };
+    } else if (pos.x > winL && pos.x < winR) {
+      // 拖窗：记录按住处的时刻，平移时保持跟随手感
+      view.follow = false;
+      view.frozen = false;
+      drag = { kind: 'ov-pan', grabT: pos.t, startRightT: currentT1() };
+    } else {
+      // 点空白：窗口中心跳到该时间点
+      ovSetWindow(pos.t + view.windowMs / 2, view.windowMs);
+      updateButtons();
+    }
+    markDirty();
+  });
+  ovCanvas.addEventListener('pointermove', (e: PointerEvent) => {
+    if (!drag) return;
+    const pos = ovPointer(e);
+    if (!pos || !ovRange) return;
+    if (drag.kind === 'ov-pan') {
+      // 按住处时刻跟随光标：窗口平移量 = grabT - 光标时刻
+      ovSetWindow(drag.startRightT - (pos.t - drag.grabT), view.windowMs);
+      if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === 'ov-left') {
+      const w = clamp(drag.anchorT - pos.t, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      ovSetWindow(drag.anchorT, w);
+      view.follow = false;
+    } else if (drag.kind === 'ov-right') {
+      const w = clamp(pos.t - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      ovSetWindow(pos.t, w);
+      view.follow = false;
+    } else return;
+    updateButtons();
+    markDirty();
+  });
+  const endOvDrag = (e: PointerEvent) => {
+    if (ovCanvas.hasPointerCapture(e.pointerId)) ovCanvas.releasePointerCapture(e.pointerId);
+    if (drag?.kind === 'ov-pan' || drag?.kind === 'ov-left' || drag?.kind === 'ov-right') {
+      drag = null;
+      updateButtons();
+      markDirty();
+    }
+  };
+  ovCanvas.addEventListener('pointerup', endOvDrag);
+  ovCanvas.addEventListener('pointercancel', endOvDrag);
+  ovCanvas.addEventListener(
+    'wheel',
+    (e: WheelEvent) => {
+      e.preventDefault();
+      const pos = ovPointer(e);
+      if (!pos) return;
+      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      const oldWindow = view.windowMs;
+      const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, oldWindow * factor));
+      // 以光标处时刻为锚缩放
+      const anchoredRight = pos.t + (currentT1() - pos.t) * (newWindow / oldWindow);
+      view.windowMs = newWindow;
+      ovSetWindow(anchoredRight, newWindow);
+      updateButtons();
+      markDirty();
+    },
+    { passive: false }
+  );
+
   canvas.addEventListener('dblclick', () => {
     view.follow = true;
     view.frozen = false;
@@ -791,8 +878,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   canvas.addEventListener('click', (e: MouseEvent) => {
     if (!cursorMode) return;
-    const { x, y } = pointerPos(e);
-    if (!inPlot(x) || hitScrollbar(x, y) || hitOverview(x, y)) return;
+    const { x } = pointerPos(e);
+    if (!inPlot(x)) return;
     const t = timeAtX(x);
     const px = (c: number) => geom.plotLeft + ((c - geom.t0) / view.windowMs) * geom.plotWidth;
     if (view.cursorA === null) view.cursorA = t;
@@ -919,6 +1006,15 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       lastDrawnVersion = engine.version;
       viewDirty = false;
       geom = drawWave(canvas, engine, view, buildColors());
+      // 画布外控件：总览条（总览开关）+ 通道滚动条（分栏溢出）
+      if (view.overview) {
+        ovCanvas.style.display = '';
+        ovRange = drawOverviewCanvas(ovCanvas, engine, view, buildColors());
+      } else {
+        ovCanvas.style.display = 'none';
+        ovRange = null;
+      }
+      syncVScroll();
     }
   };
 
