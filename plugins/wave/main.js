@@ -206,12 +206,18 @@ var defaultViewState = () => ({
   style: "line",
   yRanges: /* @__PURE__ */ new Map(),
   cursorA: null,
-  cursorB: null
+  cursorB: null,
+  overview: true,
+  paneScroll: 0
 });
 var MIN_WINDOW = 100;
 var MAX_WINDOW = 30 * 6e4;
 var AXIS_WIDTH = 64;
 var TIME_AXIS_H = 22;
+var OVERVIEW_H = 26;
+var PANE_OVERVIEW_H = 14;
+var MIN_PANE_H = 56;
+var SCROLL_W = 8;
 var lastYRanges = /* @__PURE__ */ new Map();
 var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 var niceStep = (range, targetLines) => {
@@ -237,13 +243,39 @@ var fmtDuration = (ms) => {
   if (a >= 1e3) return `${(ms / 1e3).toFixed(2)} s`;
   return `${ms.toFixed(0)} ms`;
 };
+var rr = (g, x, y, w, h, r) => {
+  g.beginPath();
+  if (typeof g.roundRect === "function") g.roundRect(x, y, w, h, r);
+  else g.rect(x, y, w, h);
+};
+var ovMins = null;
+var ovMaxs = null;
+var ovCap = 0;
+var ensureOverviewBuf = (cols) => {
+  if (ovCap < cols) {
+    ovCap = Math.ceil(cols * 1.5);
+    ovMins = new Float32Array(ovCap);
+    ovMaxs = new Float32Array(ovCap);
+  }
+};
 var drawWave = (canvas, engine, view, colors) => {
+  const emptyGeom = {
+    t0: 0,
+    t1: 0,
+    plotLeft: 0,
+    plotWidth: 0,
+    panes: [],
+    viewport: { top: 0, height: 0 },
+    overview: null,
+    paneOverviews: null,
+    scroll: null
+  };
   const zoom = Number(document.documentElement.style.zoom) || 1;
   const dpr = (window.devicePixelRatio || 1) * zoom;
   const cssW = canvas.clientWidth;
   const cssH = canvas.clientHeight;
   const g = canvas.getContext("2d");
-  if (!g || cssW < 40 || cssH < 40) return { t0: 0, t1: 0, plotLeft: 0, plotWidth: 0 };
+  if (!g || cssW < 40 || cssH < 40) return emptyGeom;
   const W = Math.round(cssW * dpr);
   const H = Math.round(cssH * dpr);
   if (canvas.width !== W || canvas.height !== H) {
@@ -253,41 +285,95 @@ var drawWave = (canvas, engine, view, colors) => {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.fillStyle = colors.bg;
   g.fillRect(0, 0, cssW, cssH);
-  const t1 = view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
-  const t0 = t1 - view.windowMs;
+  const hasOverlayOverview = view.overview;
   const plotLeft = 8;
   const plotTop = 8;
   const plotRight = cssW - AXIS_WIDTH;
-  const plotBottom = cssH - TIME_AXIS_H;
+  const plotBottom = cssH - TIME_AXIS_H - (hasOverlayOverview ? OVERVIEW_H + 6 : 0);
   const plotW = plotRight - plotLeft;
-  const geom = { t0, t1, plotLeft, plotWidth: plotW };
+  const viewportH = plotBottom - plotTop;
+  const t1 = view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
+  const t0 = t1 - view.windowMs;
   const visIdx = [];
   engine.channels.forEach((_, i) => {
     if (engine.visible[i]) visIdx.push(i);
   });
+  const geom = {
+    t0,
+    t1,
+    plotLeft,
+    plotWidth: plotW,
+    panes: [],
+    viewport: { top: plotTop, height: viewportH },
+    overview: null,
+    paneOverviews: null,
+    scroll: null
+  };
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
   if (i1 - i0 < 2 || visIdx.length === 0) {
-    drawEmpty(g, plotLeft, plotTop, plotW, plotBottom - plotTop, colors);
+    drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
     drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
-  const panes = view.overlay ? [{ channels: visIdx, top: plotTop, height: plotBottom - plotTop }] : visIdx.map((ch, i) => ({
-    channels: [ch],
-    top: plotTop + (plotBottom - plotTop) / visIdx.length * i,
-    height: (plotBottom - plotTop) / visIdx.length
-  }));
+  let paneH;
+  let scrollOffset = 0;
+  let scrollMax = 0;
+  let contentHeight = 0;
+  if (view.overlay) {
+    paneH = viewportH;
+  } else {
+    paneH = Math.max(MIN_PANE_H, viewportH / visIdx.length);
+    contentHeight = paneH * visIdx.length;
+    scrollMax = Math.max(0, contentHeight - viewportH);
+    scrollOffset = clamp(view.paneScroll, 0, scrollMax);
+    view.paneScroll = scrollOffset;
+  }
+  const panes = view.overlay ? [{ ch: visIdx[0], top: plotTop, height: paneH }] : visIdx.map((ch, i) => ({ ch, top: plotTop - scrollOffset + paneH * i, height: paneH }));
+  geom.panes = view.overlay ? [] : panes;
+  const fullT0 = engine.t.at(0);
+  const fullT1 = engine.lastT;
+  const drawOverlayOverview = hasOverlayOverview && view.overlay && fullT1 > fullT0;
+  if (drawOverlayOverview) {
+    geom.overview = { x: plotLeft, y: plotBottom + 4, w: plotW, h: OVERVIEW_H };
+  }
+  if (!view.overlay && view.overview && paneH >= 48 && fullT1 > fullT0) {
+    geom.paneOverviews = panes.map((p) => ({ p, barY: p.top + p.height - PANE_OVERVIEW_H - 2 })).filter(({ p, barY }) => barY >= plotTop && barY + PANE_OVERVIEW_H <= plotBottom).map(({ p, barY }) => ({
+      ch: p.ch,
+      top: p.top,
+      height: p.height,
+      x: plotLeft + 2,
+      y: barY,
+      w: plotW - 4,
+      h: PANE_OVERVIEW_H
+    }));
+  }
+  if (scrollMax > 0) {
+    const thumbH = Math.max(24, viewportH / contentHeight * viewportH);
+    const thumbY = plotTop + scrollOffset / scrollMax * (viewportH - thumbH);
+    geom.scroll = {
+      x: plotRight - SCROLL_W - 1,
+      y: plotTop,
+      w: SCROLL_W,
+      h: viewportH,
+      thumbY,
+      thumbH,
+      scrollMax
+    };
+  }
   const px = (t) => plotLeft + (t - t0) / view.windowMs * plotW;
   for (const pane of panes) {
+    if (pane.top + pane.height <= plotTop || pane.top >= plotBottom) continue;
     const auto = /* @__PURE__ */ new Map();
-    for (const ch of pane.channels) {
+    const channels = view.overlay ? visIdx : [pane.ch];
+    for (const ch of channels) {
       if (view.yRanges.get(ch)) continue;
       auto.set(ch, { min: Infinity, max: -Infinity });
     }
     for (let i = i0; i < i1; i++) {
       const t = engine.t.at(i);
       if (t < t0 || t > t1) continue;
-      for (const ch of pane.channels) {
+      for (const ch of channels) {
         const col = auto.get(ch);
         if (!col) continue;
         const v = engine.channels[ch].at(i);
@@ -316,7 +402,7 @@ var drawWave = (canvas, engine, view, colors) => {
     if (view.overlay) {
       let lo = Infinity;
       let hi = -Infinity;
-      for (const ch of pane.channels) {
+      for (const ch of channels) {
         const r = yRangeOf(ch);
         lo = Math.min(lo, r.min);
         hi = Math.max(hi, r.max);
@@ -324,8 +410,12 @@ var drawWave = (canvas, engine, view, colors) => {
       const pad = (hi - lo) * 0.1;
       paneRange = { min: lo - pad, max: hi + pad };
     }
+    g.save();
+    g.beginPath();
+    g.rect(plotLeft, plotTop, plotW, viewportH);
+    g.clip();
     const cols = Math.max(1, Math.floor(plotW));
-    for (const ch of pane.channels) {
+    for (const ch of channels) {
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
       const color = colors.palette[ch % colors.palette.length];
@@ -405,11 +495,23 @@ var drawWave = (canvas, engine, view, colors) => {
         g.stroke();
       }
     }
-    g.strokeStyle = colors.border;
-    g.lineWidth = 1;
-    g.strokeRect(plotLeft + 0.5, pane.top + 0.5, plotW - 1, pane.height - 1);
+    if (!view.overlay) {
+      g.fillStyle = colors.text;
+      g.font = "600 11px sans-serif";
+      g.textAlign = "left";
+      g.textBaseline = "top";
+      g.fillText(engine.names[pane.ch] ?? `CH${pane.ch + 1}`, plotLeft + 8, pane.top + 5);
+    }
+    g.restore();
     {
-      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.channels[0]);
+      const bTop = Math.max(pane.top, plotTop);
+      const bBottom = Math.min(pane.top + pane.height, plotBottom);
+      g.strokeStyle = colors.border;
+      g.lineWidth = 1;
+      g.strokeRect(plotLeft + 0.5, bTop + 0.5, plotW - 1, bBottom - bTop - 1);
+    }
+    {
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.ch);
       const step = niceStep(range.max - range.min, 4);
       g.fillStyle = colors.textDim;
       g.font = "10px Consolas, monospace";
@@ -418,6 +520,7 @@ var drawWave = (canvas, engine, view, colors) => {
       for (let v = Math.ceil(range.min / step) * step; v <= range.max; v += step) {
         const y = pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
         if (y < pane.top + 8 || y > pane.top + pane.height - 4) continue;
+        if (y < plotTop || y > plotBottom) continue;
         g.fillText(fmtValue(v), plotRight + 6, y);
         g.strokeStyle = colors.grid;
         g.beginPath();
@@ -426,6 +529,23 @@ var drawWave = (canvas, engine, view, colors) => {
         g.stroke();
       }
     }
+  }
+  if (geom.overview) {
+    drawOverviewBar(g, geom.overview, engine, i0, i1, fullT0, fullT1, visIdx, t0, t1, colors, null);
+  }
+  if (geom.paneOverviews) {
+    for (const bar of geom.paneOverviews) {
+      drawOverviewBar(g, bar, engine, i0, i1, fullT0, fullT1, [bar.ch], t0, t1, colors, colors.palette[bar.ch % colors.palette.length]);
+    }
+  }
+  if (geom.scroll) {
+    const s = geom.scroll;
+    g.fillStyle = colors.grid;
+    rr(g, s.x + 1, s.y + 1, s.w - 2, s.h - 2, 4);
+    g.fill();
+    g.fillStyle = colors.textDim;
+    rr(g, s.x + 1, s.thumbY + 1, s.w - 2, s.thumbH - 2, 4);
+    g.fill();
   }
   drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
   for (const c of [view.cursorA, view.cursorB]) {
@@ -440,6 +560,59 @@ var drawWave = (canvas, engine, view, colors) => {
     g.setLineDash([]);
   }
   return geom;
+};
+var drawOverviewBar = (g, bar, engine, i0, i1, fullT0, fullT1, channels, t0, t1, colors, singleColor) => {
+  g.fillStyle = colors.panel;
+  rr(g, bar.x + 0.5, bar.y + 0.5, bar.w - 1, bar.h - 1, 4);
+  g.fill();
+  g.strokeStyle = colors.border;
+  g.lineWidth = 1;
+  g.stroke();
+  const cols = Math.max(1, Math.floor(bar.w));
+  ensureOverviewBuf(cols);
+  const mins = ovMins;
+  const maxs = ovMaxs;
+  const visible = i1 - i0;
+  const stride = visible > 6e5 ? Math.ceil(visible / Math.max(1e3, Math.floor(6e5 / channels.length))) : 1;
+  const barInnerY = bar.y + 2;
+  const barInnerH = bar.h - 4;
+  for (const ch of channels) {
+    mins.fill(Infinity, 0, cols);
+    maxs.fill(-Infinity, 0, cols);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = i0; i < i1; i += stride) {
+      const t = engine.t.at(i);
+      if (t < fullT0 || t > fullT1) continue;
+      const col = clamp(Math.floor((t - fullT0) / (fullT1 - fullT0) * cols), 0, cols - 1);
+      const v = engine.channels[ch].at(i);
+      if (v < mins[col]) mins[col] = v;
+      if (v > maxs[col]) maxs[col] = v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!isFinite(lo) || !isFinite(hi) || hi <= lo) continue;
+    const yOf = (v) => barInnerY + barInnerH - (v - lo) / (hi - lo) * barInnerH;
+    g.fillStyle = singleColor ?? colors.palette[ch % colors.palette.length];
+    g.globalAlpha = singleColor ? 0.55 : 0.6;
+    for (let col = 0; col < cols; col++) {
+      if (mins[col] > maxs[col]) continue;
+      const x = bar.x + col;
+      const yTop = yOf(maxs[col]);
+      g.fillRect(x, yTop, 1, Math.max(1, yOf(mins[col]) - yTop));
+    }
+    g.globalAlpha = 1;
+  }
+  const wx0 = bar.x + (t0 - fullT0) / (fullT1 - fullT0) * bar.w;
+  const wx1 = bar.x + (t1 - fullT0) / (fullT1 - fullT0) * bar.w;
+  const clampedX0 = clamp(Math.min(wx0, wx1), bar.x, bar.x + bar.w);
+  const clampedX1 = clamp(Math.max(wx0, wx1), bar.x, bar.x + bar.w);
+  g.fillStyle = colors.accent;
+  g.globalAlpha = 0.14;
+  g.fillRect(clampedX0, bar.y + 1, clampedX1 - clampedX0, bar.h - 2);
+  g.globalAlpha = 1;
+  g.strokeStyle = colors.accent;
+  g.strokeRect(clampedX0 + 0.5, bar.y + 1.5, Math.max(1, clampedX1 - clampedX0 - 1), bar.h - 3);
 };
 var drawEmpty = (g, x, y, w, h, colors) => {
   g.fillStyle = colors.textDim;
@@ -619,6 +792,9 @@ NNSerialTool 波形插件 → 数据源选对应会话。
 **最多 64 通道**（协议 N 字段为 1 字节，固件 \`NNWAVE_MAX_CHANNELS\` 与上位机解析器统一按 64 校验，
 超出即整帧丢弃）。通道数在 \`nnwave_send\` 的 \`count\` 参数里逐帧指定，可动态增减；
 上位机按本帧 N 值自动扩展图例。每通道在引擎里为 200 万点环形缓冲。
+
+注意：通道名帧 payload 容量 = 4×N 字节，每个名字占 len+1 字节（C/Rust 模板一致）；
+中文名每字 3 字节，N 较小时请用短名（如 "T1"）。
 
 ## 带宽参考
 
@@ -879,7 +1055,11 @@ var CSS = `
   border:1px solid rgba(23,26,33,.1); border-radius:6px; overflow:hidden; }
 .theme-dark .wavep-wrap { border-color:rgba(255,255,255,.09); }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
-.wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; }
+.wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; align-content:flex-start;
+  max-height:136px; overflow-y:auto; scrollbar-width:thin;
+  scrollbar-color:rgba(128,132,140,.45) transparent; }
+.wavep-legend::-webkit-scrollbar { width:8px; }
+.wavep-legend::-webkit-scrollbar-thumb { background:rgba(128,132,140,.45); border-radius:4px; }
 .wavep-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
   background:rgba(23,26,33,.04); box-shadow:inset 0 0 0 1px rgba(23,26,33,.08); cursor:pointer; user-select:none; }
 .wavep-chip:hover { background:rgba(59,111,212,.08); }
@@ -971,6 +1151,7 @@ var mountWave = (el, ctx) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
+        <button type="button" class="wavep-btn wavep-overviewbtn">总览</button>
         <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
@@ -988,6 +1169,7 @@ var mountWave = (el, ctx) => {
   const wrap = el.querySelector(".wavep-wrap");
   const sourceSel = el.querySelector(".wavep-source");
   const btnOverlay = el.querySelector(".wavep-overlay");
+  const btnOverview = el.querySelector(".wavep-overviewbtn");
   const btnFreeze = el.querySelector(".wavep-freeze");
   const btnFollow = el.querySelector(".wavep-follow");
   const btnCursor = el.querySelector(".wavep-cursorbtn");
@@ -1196,6 +1378,7 @@ var mountWave = (el, ctx) => {
   });
   const updateButtons = () => {
     btnOverlay.textContent = view.overlay ? "叠加" : "分栏";
+    btnOverview.classList.toggle("active", view.overview);
     btnFreeze.textContent = view.frozen ? "已冻结" : "冻结";
     btnFreeze.classList.toggle("active", view.frozen);
     btnFollow.style.display = !view.follow && !view.frozen ? "" : "none";
@@ -1206,6 +1389,14 @@ var mountWave = (el, ctx) => {
   btnOverlay.addEventListener("click", () => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
+    view.paneScroll = 0;
+    updateButtons();
+    markDirty();
+  });
+  btnOverview.addEventListener("click", () => {
+    view.overview = !view.overview;
+    view.paneScroll = 0;
+    persist();
     updateButtons();
     markDirty();
   });
@@ -1276,20 +1467,46 @@ var mountWave = (el, ctx) => {
     const scale = rect.width / (canvas.clientWidth || 1);
     return { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
   };
-  let geom = { t0: 0, t1: 0, plotLeft: 0, plotWidth: 1 };
+  let geom = {
+    t0: 0,
+    t1: 0,
+    plotLeft: 0,
+    plotWidth: 1,
+    panes: [],
+    viewport: { top: 0, height: 0 },
+    overview: null,
+    paneOverviews: null,
+    scroll: null
+  };
   const inPlot = (x) => x >= geom.plotLeft && x <= geom.plotLeft + geom.plotWidth;
   const timeAtX = (x) => geom.t0 + (x - geom.plotLeft) / geom.plotWidth * view.windowMs;
   const currentT1 = () => view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
+  const hitScrollbar = (x, y) => geom.scroll && x >= geom.scroll.x - 3 && x <= geom.scroll.x + geom.scroll.w + 3 && y >= geom.scroll.y && y <= geom.scroll.y + geom.scroll.h ? geom.scroll : null;
+  const hitOverview = (x, y) => {
+    const inRect = (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+    if (geom.overview && inRect(geom.overview)) return geom.overview;
+    const paneBar = geom.paneOverviews?.find((r) => inRect(r));
+    return paneBar ?? null;
+  };
+  const overviewTAt = (bar, x) => {
+    const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
+    const fullT1 = engine.lastT;
+    const frac = clamp((x - bar.x) / (bar.w || 1), 0, 1);
+    return fullT0 + frac * (fullT1 - fullT0);
+  };
+  const clampWindow = (rightT, windowMs) => {
+    const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+    const minRightT = firstT + windowMs;
+    const clampedRight = Math.min(Math.max(rightT, Math.min(minRightT, engine.lastT)), engine.lastT);
+    return { rightT: clampedRight, follow: !view.frozen && clampedRight >= engine.lastT - 1 };
+  };
   const findPaneChannel = (y) => {
     if (view.overlay) return null;
-    const plotTop = 8;
-    const plotBottom = canvas.clientHeight - 22;
-    if (y < plotTop || y > plotBottom) return null;
-    const vis = engine.channels.map((_, i) => i).filter((i) => engine.visible[i] !== false);
-    if (vis.length === 0) return null;
-    const paneH = (plotBottom - plotTop) / vis.length;
-    const idx = Math.min(vis.length - 1, Math.max(0, Math.floor((y - plotTop) / paneH)));
-    return vis[idx];
+    for (const p of geom.panes) {
+      if (y >= p.top && y <= p.top + p.height && p.top + p.height > geom.viewport.top && p.top < geom.viewport.top + geom.viewport.height)
+        return p.ch;
+    }
+    return null;
   };
   const scaleY = (ch, factor) => {
     const targets = ch === null ? engine.channels.map((_, i) => i).filter((i) => engine.visible[i] !== false) : [ch];
@@ -1308,7 +1525,14 @@ var mountWave = (el, ctx) => {
     (e) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
-      if (!inPlot(x)) return;
+      const sb = hitScrollbar(x, y);
+      if (sb) {
+        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, sb.scrollMax);
+        markDirty();
+        return;
+      }
+      const ov = hitOverview(x, y);
+      if (!inPlot(x) && !ov) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {
         scaleY(findPaneChannel(y), factor);
@@ -1316,7 +1540,7 @@ var mountWave = (el, ctx) => {
       }
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
       view.windowMs = newWindow;
-      const tAt = timeAtX(x);
+      const tAt = ov ? overviewTAt(ov, x) : timeAtX(x);
       const rightEdge = geom.plotLeft + geom.plotWidth;
       const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
       const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -1332,6 +1556,48 @@ var mountWave = (el, ctx) => {
   canvas.addEventListener("pointerdown", (e) => {
     const { x, y } = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
+    const sb = hitScrollbar(x, y);
+    if (sb) {
+      const inThumb = y >= sb.thumbY && y <= sb.thumbY + sb.thumbH;
+      if (inThumb) {
+        const ratio = sb.h - sb.thumbH > 0 ? sb.scrollMax / (sb.h - sb.thumbH) : 0;
+        drag = { kind: "scroll", startY: y, startScroll: view.paneScroll, ratio };
+      } else {
+        const page = geom.viewport.height * (y < sb.thumbY ? -0.9 : 0.9);
+        view.paneScroll = clamp(view.paneScroll + page, 0, sb.scrollMax);
+        markDirty();
+      }
+      return;
+    }
+    const ov = hitOverview(x, y);
+    if (ov) {
+      const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const fullRange = engine.lastT - fullT0 || 1;
+      const winL = ov.x + (geom.t0 - fullT0) / fullRange * ov.w;
+      const winR = ov.x + (geom.t1 - fullT0) / fullRange * ov.w;
+      const tAt = overviewTAt(ov, x);
+      if (Math.abs(x - winL) <= 5 && winR - winL > 12) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: "ov-left", bar: ov, anchorT: currentT1() };
+      } else if (Math.abs(x - winR) <= 5 && winR - winL > 12) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: "ov-right", bar: ov, anchorT: geom.t0 };
+      } else if (x > winL && x < winR) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: "ov-pan", bar: ov, startX: x, startRightT: currentT1() };
+      } else {
+        const { rightT, follow } = clampWindow(tAt + view.windowMs / 2, view.windowMs);
+        view.rightT = rightT;
+        view.follow = follow;
+        view.frozen = false;
+        updateButtons();
+      }
+      markDirty();
+      return;
+    }
     if (x <= geom.plotLeft + 4) {
       const ch = findPaneChannel(y);
       const base = (ch !== null ? view.yRanges.get(ch) : void 0) ?? (ch !== null ? lastYRanges.get(ch) : void 0);
@@ -1360,6 +1626,29 @@ var mountWave = (el, ctx) => {
       view.rightT = Math.min(Math.max(drag.startRightT - dt, Math.min(minRightT, engine.lastT)), engine.lastT);
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === "scroll") {
+      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, geom.scroll?.scrollMax ?? 0);
+    } else if (drag.kind === "ov-pan") {
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const dt = (x - drag.startX) / (drag.bar.w || 1) * (engine.lastT - firstT);
+      const { rightT, follow } = clampWindow(drag.startRightT - dt, view.windowMs);
+      view.rightT = rightT;
+      view.follow = follow;
+      if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === "ov-left") {
+      const tAt = overviewTAt(drag.bar, x);
+      const w = clamp(drag.anchorT - tAt, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      view.rightT = drag.anchorT;
+      view.follow = false;
+      view.frozen = false;
+    } else if (drag.kind === "ov-right") {
+      const tAt = overviewTAt(drag.bar, x);
+      const w = clamp(tAt - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      view.rightT = clampWindow(tAt, w).rightT;
+      view.follow = false;
+      view.frozen = false;
     } else {
       const factor = Math.exp((y - drag.startY) * 5e-3);
       const center = (drag.base.min + drag.base.max) / 2;
@@ -1381,6 +1670,7 @@ var mountWave = (el, ctx) => {
     view.frozen = false;
     view.windowMs = 1e4;
     view.yRanges.clear();
+    view.paneScroll = 0;
     view.cursorA = null;
     view.cursorB = null;
     updateButtons();
@@ -1388,8 +1678,8 @@ var mountWave = (el, ctx) => {
   });
   canvas.addEventListener("click", (e) => {
     if (!cursorMode) return;
-    const { x } = pointerPos(e);
-    if (!inPlot(x)) return;
+    const { x, y } = pointerPos(e);
+    if (!inPlot(x) || hitScrollbar(x, y) || hitOverview(x, y)) return;
     const t = timeAtX(x);
     const px = (c) => geom.plotLeft + (c - geom.t0) / view.windowMs * geom.plotWidth;
     if (view.cursorA === null) view.cursorA = t;
@@ -1522,6 +1812,7 @@ var mountWave = (el, ctx) => {
       );
       if (!saved) return;
       if (typeof saved.overlay === "boolean") view.overlay = saved.overlay;
+      if (typeof saved.overview === "boolean") view.overview = saved.overview;
       if (typeof saved.windowMs === "number")
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
       if (saved.style === "line" || saved.style === "dots" || saved.style === "bars") view.style = saved.style;
@@ -1542,7 +1833,7 @@ var mountWave = (el, ctx) => {
   markDirty();
   const persist = () => {
     try {
-      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
+      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, style: view.style, overview: view.overview, colors: { ...colorOverrides } });
     } catch {
     }
   };

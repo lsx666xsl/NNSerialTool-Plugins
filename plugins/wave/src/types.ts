@@ -43,6 +43,13 @@ export interface FirmwareFile {
   text: string;
 }
 
+export interface ProtocolDef {
+  id: string;
+  name: string;
+  description?: string;
+  createParser(): ParserInstance;
+}
+
 export interface PluginContext {
   readonly pluginId: string;
   theme(): ThemeName;
@@ -52,7 +59,7 @@ export interface PluginContext {
   onSessionsChange?(cb: (list: SessionSnapshot[]) => void): () => void;
   onRawData(cb: (e: RawDataEvent) => void): () => void;
   notify(text: string): void;
-  exportTextFiles?(title: string, files: FirmwareFile[]): Promise<string>;
+  exportTextFiles?(title: string, files: FirmwareFile[], folderName?: string): Promise<string>;
   storage: {
     get<T>(key: string, fallback: T): T;
     set(key: string, value: unknown): void;

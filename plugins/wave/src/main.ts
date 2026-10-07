@@ -4,6 +4,7 @@ import type { PluginContext, SessionSnapshot, ThemeName } from './types';
 import { createNnWaveParser } from './nnwave';
 import { WaveEngine } from './engine';
 import {
+  clamp,
   defaultViewState,
   drawWave,
   fmtDuration,
@@ -11,7 +12,10 @@ import {
   lastYRanges,
   MAX_WINDOW,
   MIN_WINDOW,
+  type Rect,
+  type ScrollGeom,
   type ViewState,
+  type WaveGeom,
   type YRange,
 } from './renderer';
 import { FIRMWARE_FILES } from './firmware';
@@ -44,7 +48,11 @@ const CSS = `
   border:1px solid rgba(23,26,33,.1); border-radius:6px; overflow:hidden; }
 .theme-dark .wavep-wrap { border-color:rgba(255,255,255,.09); }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
-.wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; }
+.wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; align-content:flex-start;
+  max-height:136px; overflow-y:auto; scrollbar-width:thin;
+  scrollbar-color:rgba(128,132,140,.45) transparent; }
+.wavep-legend::-webkit-scrollbar { width:8px; }
+.wavep-legend::-webkit-scrollbar-thumb { background:rgba(128,132,140,.45); border-radius:4px; }
 .wavep-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
   background:rgba(23,26,33,.04); box-shadow:inset 0 0 0 1px rgba(23,26,33,.08); cursor:pointer; user-select:none; }
 .wavep-chip:hover { background:rgba(59,111,212,.08); }
@@ -144,6 +152,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
+        <button type="button" class="wavep-btn wavep-overviewbtn">总览</button>
         <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
@@ -162,6 +171,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const wrap = el.querySelector('.wavep-wrap') as HTMLElement;
   const sourceSel = el.querySelector('.wavep-source') as HTMLSelectElement;
   const btnOverlay = el.querySelector('.wavep-overlay') as HTMLButtonElement;
+  const btnOverview = el.querySelector('.wavep-overviewbtn') as HTMLButtonElement;
   const btnFreeze = el.querySelector('.wavep-freeze') as HTMLButtonElement;
   const btnFollow = el.querySelector('.wavep-follow') as HTMLButtonElement;
   const btnCursor = el.querySelector('.wavep-cursorbtn') as HTMLButtonElement;
@@ -403,6 +413,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   // ---------- 工具按钮 ----------
   const updateButtons = () => {
     btnOverlay.textContent = view.overlay ? '叠加' : '分栏';
+    btnOverview.classList.toggle('active', view.overview);
     btnFreeze.textContent = view.frozen ? '已冻结' : '冻结';
     btnFreeze.classList.toggle('active', view.frozen);
     btnFollow.style.display = !view.follow && !view.frozen ? '' : 'none';
@@ -415,6 +426,15 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   btnOverlay.addEventListener('click', () => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
+    view.paneScroll = 0; // 叠加无纵向滚动，切回分栏时从头开始
+    updateButtons();
+    markDirty();
+  });
+
+  btnOverview.addEventListener('click', () => {
+    view.overview = !view.overview;
+    view.paneScroll = 0;
+    persist();
     updateButtons();
     markDirty();
   });
@@ -497,21 +517,54 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     return { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale };
   };
 
-  let geom = { t0: 0, t1: 0, plotLeft: 0, plotWidth: 1 };
+  let geom: WaveGeom = {
+    t0: 0,
+    t1: 0,
+    plotLeft: 0,
+    plotWidth: 1,
+    panes: [],
+    viewport: { top: 0, height: 0 },
+    overview: null,
+    paneOverviews: null,
+    scroll: null,
+  };
   const inPlot = (x: number) => x >= geom.plotLeft && x <= geom.plotLeft + geom.plotWidth;
   const timeAtX = (x: number) => geom.t0 + ((x - geom.plotLeft) / geom.plotWidth) * view.windowMs;
   const currentT1 = () => (view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT);
 
+  // ---------- 总览条 / 纵向滚动条命中与换算 ----------
+  const hitScrollbar = (x: number, y: number): ScrollGeom | null =>
+    geom.scroll && x >= geom.scroll.x - 3 && x <= geom.scroll.x + geom.scroll.w + 3 && y >= geom.scroll.y && y <= geom.scroll.y + geom.scroll.h
+      ? geom.scroll
+      : null;
+  const hitOverview = (x: number, y: number): Rect | null => {
+    const inRect = (r: Rect) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+    if (geom.overview && inRect(geom.overview)) return geom.overview;
+    const paneBar = geom.paneOverviews?.find((r) => inRect(r));
+    return paneBar ?? null;
+  };
+  // 总览条内 x → 全时间范围时间
+  const overviewTAt = (bar: Rect, x: number): number => {
+    const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
+    const fullT1 = engine.lastT;
+    const frac = clamp((x - bar.x) / (bar.w || 1), 0, 1);
+    return fullT0 + frac * (fullT1 - fullT0);
+  };
+  // 视窗钳制：右缘不超出最新数据、左缘不早于数据起点（拖不出空白区）
+  const clampWindow = (rightT: number, windowMs: number): { rightT: number; follow: boolean } => {
+    const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+    const minRightT = firstT + windowMs;
+    const clampedRight = Math.min(Math.max(rightT, Math.min(minRightT, engine.lastT)), engine.lastT);
+    return { rightT: clampedRight, follow: !view.frozen && clampedRight >= engine.lastT - 1 };
+  };
+
   const findPaneChannel = (y: number): number | null => {
     if (view.overlay) return null;
-    const plotTop = 8;
-    const plotBottom = canvas.clientHeight - 22;
-    if (y < plotTop || y > plotBottom) return null;
-    const vis = engine.channels.map((_, i) => i).filter((i) => engine.visible[i] !== false);
-    if (vis.length === 0) return null;
-    const paneH = (plotBottom - plotTop) / vis.length;
-    const idx = Math.min(vis.length - 1, Math.max(0, Math.floor((y - plotTop) / paneH)));
-    return vis[idx];
+    for (const p of geom.panes) {
+      if (y >= p.top && y <= p.top + p.height && p.top + p.height > geom.viewport.top && p.top < geom.viewport.top + geom.viewport.height)
+        return p.ch;
+    }
+    return null;
   };
 
   const scaleY = (ch: number | null, factor: number) => {
@@ -533,7 +586,15 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     (e: WheelEvent) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
-      if (!inPlot(x)) return;
+      // 分栏纵向滚动条：滚轮直接滚动通道列表（不缩放时间窗）
+      const sb = hitScrollbar(x, y);
+      if (sb) {
+        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, sb.scrollMax);
+        markDirty();
+        return;
+      }
+      const ov = hitOverview(x, y);
+      if (!inPlot(x) && !ov) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {
         scaleY(findPaneChannel(y), factor);
@@ -544,7 +605,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       // 缩放一律以光标为锚点（用户要求的标准示波器交互）：
       // 右缘钳制在数据范围内（拖不出空白未来）；光标区域放大后视图停在原地，
       // 拖回最右或点「回到最新」即恢复实时跟随
-      const tAt = timeAtX(x);
+      const tAt = ov ? overviewTAt(ov, x) : timeAtX(x);
       const rightEdge = geom.plotLeft + geom.plotWidth;
       const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
       const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -561,12 +622,66 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   type DragState =
     | { kind: 'pan'; startX: number; startRightT: number }
-    | { kind: 'yscale'; ch: number | null; startY: number; base: YRange };
+    | { kind: 'yscale'; ch: number | null; startY: number; base: YRange }
+    // 总览条：拖窗平移 / 拖左右缘缩放
+    | { kind: 'ov-pan'; bar: Rect; startX: number; startRightT: number }
+    | { kind: 'ov-left'; bar: Rect; anchorT: number }
+    | { kind: 'ov-right'; bar: Rect; anchorT: number }
+    // 纵向滚动条 thumb 拖动（ratio = scrollMax / thumb 可行程）
+    | { kind: 'scroll'; startY: number; startScroll: number; ratio: number };
   let drag: DragState | null = null;
 
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
     const { x, y } = pointerPos(e);
     canvas.setPointerCapture(e.pointerId);
+
+    // 1) 纵向滚动条：thumb 上按下=拖动；轨道空白=按页滚动
+    const sb = hitScrollbar(x, y);
+    if (sb) {
+      const inThumb = y >= sb.thumbY && y <= sb.thumbY + sb.thumbH;
+      if (inThumb) {
+        const ratio = sb.h - sb.thumbH > 0 ? sb.scrollMax / (sb.h - sb.thumbH) : 0;
+        drag = { kind: 'scroll', startY: y, startScroll: view.paneScroll, ratio };
+      } else {
+        const page = geom.viewport.height * (y < sb.thumbY ? -0.9 : 0.9);
+        view.paneScroll = clamp(view.paneScroll + page, 0, sb.scrollMax);
+        markDirty();
+      }
+      return;
+    }
+
+    // 2) 总览条：拖窗平移 / 边缘缩放 / 空白点击跳转
+    const ov = hitOverview(x, y);
+    if (ov) {
+      const fullT0 = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const fullRange = engine.lastT - fullT0 || 1;
+      const winL = ov.x + ((geom.t0 - fullT0) / fullRange) * ov.w;
+      const winR = ov.x + ((geom.t1 - fullT0) / fullRange) * ov.w;
+      const tAt = overviewTAt(ov, x);
+      if (Math.abs(x - winL) <= 5 && winR - winL > 12) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: 'ov-left', bar: ov, anchorT: currentT1() };
+      } else if (Math.abs(x - winR) <= 5 && winR - winL > 12) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: 'ov-right', bar: ov, anchorT: geom.t0 };
+      } else if (x > winL && x < winR) {
+        view.frozen = false;
+        view.follow = false;
+        drag = { kind: 'ov-pan', bar: ov, startX: x, startRightT: currentT1() };
+      } else {
+        // 空白点击：窗口中心跳到该时间点
+        const { rightT, follow } = clampWindow(tAt + view.windowMs / 2, view.windowMs);
+        view.rightT = rightT;
+        view.follow = follow;
+        view.frozen = false;
+        updateButtons();
+      }
+      markDirty();
+      return;
+    }
+
     if (x <= geom.plotLeft + 4) {
       const ch = findPaneChannel(y);
       const base = (ch !== null ? view.yRanges.get(ch) : undefined) ?? (ch !== null ? lastYRanges.get(ch) : undefined);
@@ -599,7 +714,33 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       view.rightT = Math.min(Math.max(drag.startRightT - dt, Math.min(minRightT, engine.lastT)), engine.lastT);
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === 'scroll') {
+      view.paneScroll = clamp(drag.startScroll + (y - drag.startY) * drag.ratio, 0, geom.scroll?.scrollMax ?? 0);
+    } else if (drag.kind === 'ov-pan') {
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const dt = ((x - drag.startX) / (drag.bar.w || 1)) * (engine.lastT - firstT);
+      const { rightT, follow } = clampWindow(drag.startRightT - dt, view.windowMs);
+      view.rightT = rightT;
+      view.follow = follow;
+      if (view.follow) view.rightT = engine.lastT;
+    } else if (drag.kind === 'ov-left') {
+      // 拖左缘：右缘固定在 anchorT，窗口宽 = anchorT - 光标时间
+      const tAt = overviewTAt(drag.bar, x);
+      const w = clamp(drag.anchorT - tAt, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      view.rightT = drag.anchorT;
+      view.follow = false;
+      view.frozen = false;
+    } else if (drag.kind === 'ov-right') {
+      // 拖右缘：左缘固定在 anchorT，窗口宽 = 光标时间 - anchorT
+      const tAt = overviewTAt(drag.bar, x);
+      const w = clamp(tAt - drag.anchorT, MIN_WINDOW, MAX_WINDOW);
+      view.windowMs = w;
+      view.rightT = clampWindow(tAt, w).rightT;
+      view.follow = false;
+      view.frozen = false;
     } else {
+      // yscale：绘图区左缘拖动 = 纵向幅值缩放
       const factor = Math.exp((y - drag.startY) * 0.005);
       const center = (drag.base.min + drag.base.max) / 2;
       const half = ((drag.base.max - drag.base.min) / 2) * factor;
@@ -625,6 +766,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     view.frozen = false;
     view.windowMs = 10_000;
     view.yRanges.clear();
+    view.paneScroll = 0;
     view.cursorA = null;
     view.cursorB = null;
     updateButtons();
@@ -633,8 +775,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   canvas.addEventListener('click', (e: MouseEvent) => {
     if (!cursorMode) return;
-    const { x } = pointerPos(e);
-    if (!inPlot(x)) return;
+    const { x, y } = pointerPos(e);
+    if (!inPlot(x) || hitScrollbar(x, y) || hitOverview(x, y)) return;
     const t = timeAtX(x);
     const px = (c: number) => geom.plotLeft + ((c - geom.t0) / view.windowMs) * geom.plotWidth;
     if (view.cursorA === null) view.cursorA = t;
@@ -782,12 +924,13 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   // ---------- 设置持久化 ----------
   const restore = () => {
     try {
-      const saved = ctx.storage.get<{ overlay?: boolean; windowMs?: number; colors?: Record<string, string> } | null>(
+      const saved = ctx.storage.get<{ overlay?: boolean; windowMs?: number; style?: string; overview?: boolean; colors?: Record<string, string> } | null>(
         'wave-view',
         null
       );
       if (!saved) return;
       if (typeof saved.overlay === 'boolean') view.overlay = saved.overlay;
+      if (typeof saved.overview === 'boolean') view.overview = saved.overview;
       if (typeof saved.windowMs === 'number')
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
       if (saved.style === 'line' || saved.style === 'dots' || saved.style === 'bars') view.style = saved.style;
@@ -812,7 +955,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   const persist = () => {
     try {
-      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
+      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, style: view.style, overview: view.overview, colors: { ...colorOverrides } });
     } catch {
       /* 宿主未提供 storage 时静默 */
     }

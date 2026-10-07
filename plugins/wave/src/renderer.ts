@@ -1,5 +1,6 @@
 // Canvas 2D 渲染器（自包含移植）：分栏/叠加布局、每像素列 min/max 抽稀、
-// 网格坐标、游标测量。纯函数式：输入引擎快照 + 视图状态，输出一帧画面。
+// 网格坐标、游标测量、时间轴总览条、分栏标题头与纵向滚动。
+// 纯函数式：输入引擎快照 + 视图状态，输出一帧画面 + 交互几何（WaveGeom）。
 import type { ThemeColors } from './types';
 import type { WaveEngine } from './engine';
 
@@ -20,6 +21,8 @@ export interface ViewState {
   yRanges: Map<number, YRange | null>; // 每通道 Y 范围，null=自动
   cursorA: number | null; // 游标时间（ms）
   cursorB: number | null;
+  overview: boolean; // 总览条显隐（叠加=底部一条；分栏=每栏内嵌一条）
+  paneScroll: number; // 分栏纵向滚动偏移（px），溢出时 >0
 }
 
 export const defaultViewState = (): ViewState => ({
@@ -32,17 +35,58 @@ export const defaultViewState = (): ViewState => ({
   yRanges: new Map(),
   cursorA: null,
   cursorB: null,
+  overview: true,
+  paneScroll: 0,
 });
 
 export const MIN_WINDOW = 100;
 export const MAX_WINDOW = 30 * 60_000;
 export const AXIS_WIDTH = 64;
 export const TIME_AXIS_H = 22;
+export const OVERVIEW_H = 26; // 叠加模式底部总览条高
+export const PANE_OVERVIEW_H = 14; // 分栏模式每栏内嵌总览条高
+export const MIN_PANE_H = 56; // 分栏最小栏高：栏数×此值超过视口即出纵向滚动条
+export const SCROLL_W = 8; // 纵向滚动条宽（叠加在绘图区右缘）
 
 // 最近一次绘制的各通道实际量程（交互种子：纵向缩放从此范围出发）
 export const lastYRanges = new Map<number, YRange>();
 
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+export interface PaneRect {
+  ch: number; // 通道索引
+  top: number; // 屏幕坐标（含滚动偏移，可能超出视口）
+  height: number;
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface ScrollGeom {
+  x: number;
+  y: number; // 轨道区（绘图区右缘）
+  w: number;
+  h: number;
+  thumbY: number;
+  thumbH: number;
+  scrollMax: number;
+}
+
+export interface WaveGeom {
+  t0: number;
+  t1: number;
+  plotLeft: number;
+  plotWidth: number;
+  panes: PaneRect[]; // 分栏实际栏位（叠加为空数组）
+  viewport: { top: number; height: number };
+  overview: Rect | null; // 叠加模式总览条
+  paneOverviews: Array<PaneRect & Rect> | null; // 分栏模式每栏内嵌条
+  scroll: ScrollGeom | null; // 纵向滚动条（分栏溢出时非空）
+}
+
+export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 // nice 刻度步长：1/2/5 × 10^k
 export const niceStep = (range: number, targetLines: number): number => {
@@ -71,19 +115,49 @@ export const fmtDuration = (ms: number): string => {
   return `${ms.toFixed(0)} ms`;
 };
 
-// 主绘制入口。返回本次绘制的时间窗（供交互换算）
+// 圆角矩形（WebKitGTK 旧版无 roundRect 时退化为直角矩形）
+const rr = (g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) => {
+  g.beginPath();
+  if (typeof g.roundRect === 'function') g.roundRect(x, y, w, h, r);
+  else g.rect(x, y, w, h);
+};
+
+// 总览条抽稀的复用缓冲（避免 60fps 下每帧分配数百 KB 触发 GC 抖动）
+let ovMins: Float32Array | null = null;
+let ovMaxs: Float32Array | null = null;
+let ovCap = 0;
+const ensureOverviewBuf = (cols: number) => {
+  if (ovCap < cols) {
+    ovCap = Math.ceil(cols * 1.5);
+    ovMins = new Float32Array(ovCap);
+    ovMaxs = new Float32Array(ovCap);
+  }
+};
+
+// 主绘制入口。返回本次绘制的时间窗与交互几何（总览条/滚动条/栏位，供事件换算）
 export const drawWave = (
   canvas: HTMLCanvasElement,
   engine: WaveEngine,
   view: ViewState,
   colors: ThemeColors
-): { t0: number; t1: number; plotLeft: number; plotWidth: number } => {
+): WaveGeom => {
+  const emptyGeom: WaveGeom = {
+    t0: 0,
+    t1: 0,
+    plotLeft: 0,
+    plotWidth: 0,
+    panes: [],
+    viewport: { top: 0, height: 0 },
+    overview: null,
+    paneOverviews: null,
+    scroll: null,
+  };
   const zoom = Number(document.documentElement.style.zoom) || 1;
   const dpr = (window.devicePixelRatio || 1) * zoom;
   const cssW = canvas.clientWidth;
   const cssH = canvas.clientHeight;
   const g = canvas.getContext('2d');
-  if (!g || cssW < 40 || cssH < 40) return { t0: 0, t1: 0, plotLeft: 0, plotWidth: 0 };
+  if (!g || cssW < 40 || cssH < 40) return emptyGeom;
 
   const W = Math.round(cssW * dpr);
   const H = Math.round(cssH * dpr);
@@ -95,50 +169,125 @@ export const drawWave = (
   g.fillStyle = colors.bg;
   g.fillRect(0, 0, cssW, cssH);
 
-  const t1 = view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
-  const t0 = t1 - view.windowMs;
+  // 叠加模式总览条占用绘图区底部一条独立带
+  const hasOverlayOverview = view.overview;
   const plotLeft = 8;
   const plotTop = 8;
   const plotRight = cssW - AXIS_WIDTH;
-  const plotBottom = cssH - TIME_AXIS_H;
+  const plotBottom = cssH - TIME_AXIS_H - (hasOverlayOverview ? OVERVIEW_H + 6 : 0);
   const plotW = plotRight - plotLeft;
-  const geom = { t0, t1, plotLeft, plotWidth: plotW };
+  const viewportH = plotBottom - plotTop;
+
+  const t1 = view.frozen ? view.rightT : view.follow ? engine.lastT : view.rightT;
+  const t0 = t1 - view.windowMs;
 
   const visIdx: number[] = [];
   engine.channels.forEach((_, i) => {
     if (engine.visible[i]) visIdx.push(i);
   });
 
+  const geom: WaveGeom = {
+    t0,
+    t1,
+    plotLeft,
+    plotWidth: plotW,
+    panes: [],
+    viewport: { top: plotTop, height: viewportH },
+    overview: null,
+    paneOverviews: null,
+    scroll: null,
+  };
+
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
+
   if (i1 - i0 < 2 || visIdx.length === 0) {
-    drawEmpty(g, plotLeft, plotTop, plotW, plotBottom - plotTop, colors);
+    drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
     drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
 
+  // ---------- 分栏纵向滚动布局 ----------
+  // 关闭的通道不占位（visIdx 即布局列表，重开按索引序插回）；栏数×最小栏高超出
+  // 视口高度才出现滚动条，paneScroll 钳制在可滚范围。
+  let paneH: number;
+  let scrollOffset = 0;
+  let scrollMax = 0;
+  let contentHeight = 0;
+  if (view.overlay) {
+    paneH = viewportH;
+  } else {
+    paneH = Math.max(MIN_PANE_H, viewportH / visIdx.length);
+    contentHeight = paneH * visIdx.length;
+    scrollMax = Math.max(0, contentHeight - viewportH);
+    scrollOffset = clamp(view.paneScroll, 0, scrollMax);
+    view.paneScroll = scrollOffset;
+  }
+
   // 分栏：每可见通道一栏；叠加：单栏全通道
-  const panes = view.overlay
-    ? [{ channels: visIdx, top: plotTop, height: plotBottom - plotTop }]
-    : visIdx.map((ch, i) => ({
-        channels: [ch],
-        top: plotTop + ((plotBottom - plotTop) / visIdx.length) * i,
-        height: (plotBottom - plotTop) / visIdx.length,
+  const panes: PaneRect[] = view.overlay
+    ? [{ ch: visIdx[0], top: plotTop, height: paneH }]
+    : visIdx.map((ch, i) => ({ ch, top: plotTop - scrollOffset + paneH * i, height: paneH }));
+  geom.panes = view.overlay ? [] : panes;
+
+  const fullT0 = engine.t.at(0);
+  const fullT1 = engine.lastT;
+
+  // ---------- 总览条几何（先算好，画在数据层之下/之上均可） ----------
+  // 底部全宽总览条只在叠加模式出现；分栏模式按需求改为每栏内嵌一条
+  const drawOverlayOverview = hasOverlayOverview && view.overlay && fullT1 > fullT0;
+  if (drawOverlayOverview) {
+    geom.overview = { x: plotLeft, y: plotBottom + 4, w: plotW, h: OVERVIEW_H };
+  }
+  if (!view.overlay && view.overview && paneH >= 48 && fullT1 > fullT0) {
+    // 只收录"内嵌条区域完整落在视口内"的栏——部分露头的栏会把条画进时间轴区
+    geom.paneOverviews = panes
+      .map((p) => ({ p, barY: p.top + p.height - PANE_OVERVIEW_H - 2 }))
+      .filter(({ p, barY }) => barY >= plotTop && barY + PANE_OVERVIEW_H <= plotBottom)
+      .map(({ p, barY }) => ({
+        ch: p.ch,
+        top: p.top,
+        height: p.height,
+        x: plotLeft + 2,
+        y: barY,
+        w: plotW - 4,
+        h: PANE_OVERVIEW_H,
       }));
+  }
+
+  // 纵向滚动条几何（溢出时）
+  if (scrollMax > 0) {
+    const thumbH = Math.max(24, (viewportH / contentHeight) * viewportH);
+    const thumbY = plotTop + (scrollOffset / scrollMax) * (viewportH - thumbH);
+    geom.scroll = {
+      x: plotRight - SCROLL_W - 1,
+      y: plotTop,
+      w: SCROLL_W,
+      h: viewportH,
+      thumbY,
+      thumbH,
+      scrollMax,
+    };
+  }
 
   const px = (t: number) => plotLeft + ((t - t0) / view.windowMs) * plotW;
 
+  // ---------- 逐栏绘制 ----------
   for (const pane of panes) {
+    // 完全滚出视口的栏跳过（省 CPU）
+    if (pane.top + pane.height <= plotTop || pane.top >= plotBottom) continue;
+
     // 第一遍：该栏各通道自动量程（手动量程跳过聚合）
     const auto: Map<number, Column> = new Map();
-    for (const ch of pane.channels) {
+    const channels = view.overlay ? visIdx : [pane.ch];
+    for (const ch of channels) {
       if (view.yRanges.get(ch)) continue;
       auto.set(ch, { min: Infinity, max: -Infinity });
     }
     for (let i = i0; i < i1; i++) {
       const t = engine.t.at(i);
       if (t < t0 || t > t1) continue;
-      for (const ch of pane.channels) {
+      for (const ch of channels) {
         const col = auto.get(ch);
         if (!col) continue;
         const v = engine.channels[ch].at(i);
@@ -169,7 +318,7 @@ export const drawWave = (
     if (view.overlay) {
       let lo = Infinity;
       let hi = -Infinity;
-      for (const ch of pane.channels) {
+      for (const ch of channels) {
         const r = yRangeOf(ch);
         lo = Math.min(lo, r.min);
         hi = Math.max(hi, r.max);
@@ -180,8 +329,14 @@ export const drawWave = (
 
     // 第二遍：按显示样式绘制——
     //   line: 逐点连成平滑曲线；dots: 每采样一个实心点；bars: 像素列 min/max 竖条（峰谷不丢）
+    // 分栏滚动时数据必须裁剪在视口内（clip），否则画到相邻栏/时间轴上
+    g.save();
+    g.beginPath();
+    g.rect(plotLeft, plotTop, plotW, viewportH);
+    g.clip();
+
     const cols = Math.max(1, Math.floor(plotW));
-    for (const ch of pane.channels) {
+    for (const ch of channels) {
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v: number) => pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
       const color = colors.palette[ch % colors.palette.length];
@@ -270,12 +425,26 @@ export const drawWave = (
       }
     }
 
-    // 栏背景与 Y 轴刻度
-    g.strokeStyle = colors.border;
-    g.lineWidth = 1;
-    g.strokeRect(plotLeft + 0.5, pane.top + 0.5, plotW - 1, pane.height - 1);
+    // 分栏标题头：左上角显示通道名（随栏滚动，滚出视口即被裁剪）
+    if (!view.overlay) {
+      g.fillStyle = colors.text;
+      g.font = '600 11px sans-serif';
+      g.textAlign = 'left';
+      g.textBaseline = 'top';
+      g.fillText(engine.names[pane.ch] ?? `CH${pane.ch + 1}`, plotLeft + 8, pane.top + 5);
+    }
+    g.restore();
+
+    // 栏背景与 Y 轴刻度（clip 外：刻度文字画在绘图区右侧）；边框钳制在视口内（滚动时栏可部分越界）
     {
-      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.channels[0]);
+      const bTop = Math.max(pane.top, plotTop);
+      const bBottom = Math.min(pane.top + pane.height, plotBottom);
+      g.strokeStyle = colors.border;
+      g.lineWidth = 1;
+      g.strokeRect(plotLeft + 0.5, bTop + 0.5, plotW - 1, bBottom - bTop - 1);
+    }
+    {
+      const range = view.overlay && paneRange ? paneRange : yRangeOf(pane.ch);
       const step = niceStep(range.max - range.min, 4);
       g.fillStyle = colors.textDim;
       g.font = '10px Consolas, monospace';
@@ -284,6 +453,7 @@ export const drawWave = (
       for (let v = Math.ceil(range.min / step) * step; v <= range.max; v += step) {
         const y = pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
         if (y < pane.top + 8 || y > pane.top + pane.height - 4) continue;
+        if (y < plotTop || y > plotBottom) continue; // 滚出视口的刻度不画
         g.fillText(fmtValue(v), plotRight + 6, y);
         g.strokeStyle = colors.grid;
         g.beginPath();
@@ -292,6 +462,27 @@ export const drawWave = (
         g.stroke();
       }
     }
+  }
+
+  // ---------- 总览条内容 ----------
+  if (geom.overview) {
+    drawOverviewBar(g, geom.overview, engine, i0, i1, fullT0, fullT1, visIdx, t0, t1, colors, null);
+  }
+  if (geom.paneOverviews) {
+    for (const bar of geom.paneOverviews) {
+      drawOverviewBar(g, bar, engine, i0, i1, fullT0, fullT1, [bar.ch], t0, t1, colors, colors.palette[bar.ch % colors.palette.length]);
+    }
+  }
+
+  // 纵向滚动条（半透明叠在绘图区右缘）
+  if (geom.scroll) {
+    const s = geom.scroll;
+    g.fillStyle = colors.grid;
+    rr(g, s.x + 1, s.y + 1, s.w - 2, s.h - 2, 4);
+    g.fill();
+    g.fillStyle = colors.textDim;
+    rr(g, s.x + 1, s.thumbY + 1, s.w - 2, s.thumbH - 2, 4);
+    g.fill();
   }
 
   // 时间轴（相对窗口左端）
@@ -311,6 +502,80 @@ export const drawWave = (
   }
 
   return geom;
+};
+
+// 总览条绘制：全时间范围 min/max 抽稀 + 当前视窗矩形。
+// singleColor 非空 = 分栏窄条（单通道单色）；null = 叠加总览条（每通道用各自颜色）。
+const drawOverviewBar = (
+  g: CanvasRenderingContext2D,
+  bar: Rect,
+  engine: WaveEngine,
+  i0: number,
+  i1: number,
+  fullT0: number,
+  fullT1: number,
+  channels: number[],
+  t0: number,
+  t1: number,
+  colors: ThemeColors,
+  singleColor: string | null
+) => {
+  // 条背景
+  g.fillStyle = colors.panel;
+  rr(g, bar.x + 0.5, bar.y + 0.5, bar.w - 1, bar.h - 1, 4);
+  g.fill();
+  g.strokeStyle = colors.border;
+  g.lineWidth = 1;
+  g.stroke();
+
+  const cols = Math.max(1, Math.floor(bar.w));
+  ensureOverviewBuf(cols);
+  const mins = ovMins as Float32Array;
+  const maxs = ovMaxs as Float32Array;
+  const visible = i1 - i0;
+  // 多通道共享采样预算（叠加 64 通道时每通道降至 ~9千样本/帧，总览条视觉无损）
+  const stride = visible > 600_000 ? Math.ceil(visible / Math.max(1000, Math.floor(600_000 / channels.length))) : 1;
+  const barInnerY = bar.y + 2;
+  const barInnerH = bar.h - 4;
+  for (const ch of channels) {
+    mins.fill(Infinity, 0, cols);
+    maxs.fill(-Infinity, 0, cols);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = i0; i < i1; i += stride) {
+      const t = engine.t.at(i);
+      if (t < fullT0 || t > fullT1) continue;
+      const col = clamp(Math.floor(((t - fullT0) / (fullT1 - fullT0)) * cols), 0, cols - 1);
+      const v = engine.channels[ch].at(i);
+      if (v < mins[col]) mins[col] = v;
+      if (v > maxs[col]) maxs[col] = v;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!isFinite(lo) || !isFinite(hi) || hi <= lo) continue;
+    const yOf = (v: number) => barInnerY + barInnerH - ((v - lo) / (hi - lo)) * barInnerH;
+    g.fillStyle = singleColor ?? colors.palette[ch % colors.palette.length];
+    g.globalAlpha = singleColor ? 0.55 : 0.6;
+    for (let col = 0; col < cols; col++) {
+      if (mins[col] > maxs[col]) continue;
+      const x = bar.x + col;
+      const yTop = yOf(maxs[col]);
+      g.fillRect(x, yTop, 1, Math.max(1, yOf(mins[col]) - yTop));
+    }
+    g.globalAlpha = 1;
+  }
+
+  // 当前视窗矩形
+  const wx0 = bar.x + ((t0 - fullT0) / (fullT1 - fullT0)) * bar.w;
+  const wx1 = bar.x + ((t1 - fullT0) / (fullT1 - fullT0)) * bar.w;
+  const clampedX0 = clamp(Math.min(wx0, wx1), bar.x, bar.x + bar.w);
+  const clampedX1 = clamp(Math.max(wx0, wx1), bar.x, bar.x + bar.w);
+  g.fillStyle = colors.accent;
+  g.globalAlpha = 0.14;
+  g.fillRect(clampedX0, bar.y + 1, clampedX1 - clampedX0, bar.h - 2);
+  g.globalAlpha = 1;
+  g.strokeStyle = colors.accent;
+  g.strokeRect(clampedX0 + 0.5, bar.y + 1.5, Math.max(1, clampedX1 - clampedX0 - 1), bar.h - 3);
 };
 
 interface Column {
