@@ -207,7 +207,6 @@ var defaultViewState = () => ({
   yRanges: /* @__PURE__ */ new Map(),
   cursorA: null,
   cursorB: null,
-  overview: true,
   paneScroll: 0
 });
 var MIN_WINDOW = 100;
@@ -510,11 +509,9 @@ var drawWave = (canvas, engine, view, colors) => {
   }
   return geom;
 };
-var drawOverviewCanvas = (canvas, engine, view, colors) => {
+var drawOverviewStrip = (canvas, cssW, cssH, engine, colors) => {
   const zoom = Number(document.documentElement.style.zoom) || 1;
   const dpr = (window.devicePixelRatio || 1) * zoom;
-  const cssW = canvas.clientWidth;
-  const cssH = canvas.clientHeight;
   const g = canvas.getContext("2d");
   if (!g || cssW < 10 || cssH < 8) return null;
   const W = Math.round(cssW * dpr);
@@ -524,6 +521,7 @@ var drawOverviewCanvas = (canvas, engine, view, colors) => {
     canvas.height = H;
   }
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
   g.fillStyle = colors.panel;
   rr(g, 0.5, 0.5, cssW - 1, cssH - 1, 4);
   g.fill();
@@ -544,7 +542,7 @@ var drawOverviewCanvas = (canvas, engine, view, colors) => {
   const mins = ovMins;
   const maxs = ovMaxs;
   const visible = i1 - i0;
-  const stride = visible > 6e5 ? Math.ceil(visible / Math.max(1e3, Math.floor(6e5 / visIdx.length))) : 1;
+  const stride = Math.max(1, Math.ceil(visible / (cols * 3)));
   const innerY = 2;
   const innerH = cssH - 4;
   for (const ch of visIdx) {
@@ -573,8 +571,13 @@ var drawOverviewCanvas = (canvas, engine, view, colors) => {
     }
     g.globalAlpha = 1;
   }
-  const wx0 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - view.windowMs - fullT0) / (fullT1 - fullT0) * cssW;
-  const wx1 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - fullT0) / (fullT1 - fullT0) * cssW;
+  return { fullT0, fullT1 };
+};
+var drawOverviewWindow = (g, cssW, cssH, fullT0, fullT1, engine, view, colors) => {
+  if (fullT1 <= fullT0) return;
+  const rightT = view.frozen || !view.follow ? view.rightT : engine.lastT;
+  const wx0 = (rightT - view.windowMs - fullT0) / (fullT1 - fullT0) * cssW;
+  const wx1 = (rightT - fullT0) / (fullT1 - fullT0) * cssW;
   const clampedX0 = clamp(Math.min(wx0, wx1), 0, cssW);
   const clampedX1 = clamp(Math.max(wx0, wx1), 0, cssW);
   g.fillStyle = colors.accent;
@@ -583,7 +586,6 @@ var drawOverviewCanvas = (canvas, engine, view, colors) => {
   g.globalAlpha = 1;
   g.strokeStyle = colors.accent;
   g.strokeRect(clampedX0 + 0.5, 1.5, Math.max(1, clampedX1 - clampedX0 - 1), cssH - 3);
-  return { fullT0, fullT1 };
 };
 var drawEmpty = (g, x, y, w, h, colors) => {
   g.fillStyle = colors.textDim;
@@ -1387,7 +1389,6 @@ var mountWave = (el, ctx) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
-        <button type="button" class="wavep-btn wavep-overviewbtn">总览</button>
         <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
@@ -1401,7 +1402,7 @@ var mountWave = (el, ctx) => {
         <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
         <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
       </div>
-      <canvas class="wavep-ovcanvas" style="display:none" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
+      <canvas class="wavep-ovcanvas" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
     </div>`;
@@ -1413,7 +1414,6 @@ var mountWave = (el, ctx) => {
   const ovCanvas = el.querySelector(".wavep-ovcanvas");
   const sourceSel = el.querySelector(".wavep-source");
   const btnOverlay = el.querySelector(".wavep-overlay");
-  const btnOverview = el.querySelector(".wavep-overviewbtn");
   const btnFreeze = el.querySelector(".wavep-freeze");
   const btnFollow = el.querySelector(".wavep-follow");
   const btnCursor = el.querySelector(".wavep-cursorbtn");
@@ -1623,7 +1623,6 @@ var mountWave = (el, ctx) => {
   });
   const updateButtons = () => {
     btnOverlay.textContent = view.overlay ? "叠加" : "分栏";
-    btnOverview.classList.toggle("active", view.overview);
     btnFreeze.textContent = view.frozen ? "已冻结" : "冻结";
     btnFreeze.classList.toggle("active", view.frozen);
     btnFollow.style.display = !view.follow && !view.frozen ? "" : "none";
@@ -1635,13 +1634,6 @@ var mountWave = (el, ctx) => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
     view.paneScroll = 0;
-    updateButtons();
-    markDirty();
-  });
-  btnOverview.addEventListener("click", () => {
-    view.overview = !view.overview;
-    view.paneScroll = 0;
-    persist();
     updateButtons();
     markDirty();
   });
@@ -2100,11 +2092,37 @@ var mountWave = (el, ctx) => {
       markDirty();
     })
   );
+  const ovCache = document.createElement("canvas");
+  let ovStripAt = 0;
+  const renderOverview = () => {
+    const now = performance.now();
+    const g = ovCanvas.getContext("2d");
+    if (!g) return;
+    if (!ovRange || now - ovStripAt >= 200) {
+      ovStripAt = now;
+      ovRange = drawOverviewStrip(ovCache, ovCanvas.clientWidth, ovCanvas.clientHeight, engine, buildColors());
+    }
+    const cssW = ovCanvas.clientWidth;
+    const cssH = ovCanvas.clientHeight;
+    const zoom = Number(document.documentElement.style.zoom) || 1;
+    const dpr = (window.devicePixelRatio || 1) * zoom;
+    const W = Math.round(cssW * dpr);
+    const H = Math.round(cssH * dpr);
+    if (ovCanvas.width !== W || ovCanvas.height !== H) {
+      ovCanvas.width = W;
+      ovCanvas.height = H;
+    }
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, cssW, cssH);
+    if (ovRange && ovCache.width > 0) g.drawImage(ovCache, 0, 0, cssW, cssH);
+    if (ovRange) drawOverviewWindow(g, cssW, cssH, ovRange.fullT0, ovRange.fullT1, engine, view, buildColors());
+  };
   const draw = () => {
     const theme = ctx.theme();
     if (theme !== lastTheme) {
       lastTheme = theme;
       viewDirty = true;
+      ovStripAt = 0;
     }
     if (canvas.clientWidth !== lastCanvasW) {
       lastCanvasW = canvas.clientWidth;
@@ -2114,13 +2132,7 @@ var mountWave = (el, ctx) => {
       lastDrawnVersion = engine.version;
       viewDirty = false;
       geom = drawWave(canvas, engine, view, buildColors());
-      if (view.overview) {
-        ovCanvas.style.display = "";
-        ovRange = drawOverviewCanvas(ovCanvas, engine, view, buildColors());
-      } else {
-        ovCanvas.style.display = "none";
-        ovRange = null;
-      }
+      renderOverview();
       syncVScroll();
     }
   };
@@ -2146,7 +2158,6 @@ var mountWave = (el, ctx) => {
       );
       if (!saved) return;
       if (typeof saved.overlay === "boolean") view.overlay = saved.overlay;
-      if (typeof saved.overview === "boolean") view.overview = saved.overview;
       if (typeof saved.windowMs === "number")
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
       if (saved.style === "line" || saved.style === "dots" || saved.style === "bars") view.style = saved.style;
@@ -2167,7 +2178,7 @@ var mountWave = (el, ctx) => {
   markDirty();
   const persist = () => {
     try {
-      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, style: view.style, overview: view.overview, colors: { ...colorOverrides } });
+      ctx.storage.set("wave-view", { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
     } catch {
     }
   };

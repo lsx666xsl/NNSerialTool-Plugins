@@ -21,7 +21,6 @@ export interface ViewState {
   yRanges: Map<number, YRange | null>; // 每通道 Y 范围，null=自动
   cursorA: number | null; // 游标时间（ms）
   cursorB: number | null;
-  overview: boolean; // 总览条显隐（叠加=底部一条；分栏=每栏内嵌一条）
   paneScroll: number; // 分栏纵向滚动偏移（px），溢出时 >0
 }
 
@@ -35,7 +34,6 @@ export const defaultViewState = (): ViewState => ({
   yRanges: new Map(),
   cursorA: null,
   cursorB: null,
-  overview: true,
   paneScroll: 0,
 });
 
@@ -434,18 +432,19 @@ export const drawWave = (
   return geom;
 };
 
-// 总览条绘制（画布外 DOM mini canvas）：整段数据 min/max 抽稀缩影 + 当前视窗矩形。
-// 由 main.ts 在独立 canvas 上调用；返回全时间范围供交互换算，无数据返回 null。
-export const drawOverviewCanvas = (
+// 总览条缩影绘制（画布外 mini canvas 的**离屏缓存**用）：整段数据 min/max 抽稀。
+// 采样按列预算（每列 ~3 个采样点），与通道数解耦——此前每帧全量遍历，64 通道数据流时
+// 每帧 120 万+ 次采样访问把帧预算吃光（拖动滚动条一卡一卡的元凶）。
+// 由调用方节流（约 200ms 一次）重算；视窗矩形每帧单独画（drawOverviewWindow）。
+export const drawOverviewStrip = (
   canvas: HTMLCanvasElement,
+  cssW: number,
+  cssH: number,
   engine: WaveEngine,
-  view: ViewState,
   colors: ThemeColors
 ): { fullT0: number; fullT1: number } | null => {
   const zoom = Number(document.documentElement.style.zoom) || 1;
   const dpr = (window.devicePixelRatio || 1) * zoom;
-  const cssW = canvas.clientWidth;
-  const cssH = canvas.clientHeight;
   const g = canvas.getContext('2d');
   if (!g || cssW < 10 || cssH < 8) return null;
 
@@ -456,6 +455,7 @@ export const drawOverviewCanvas = (
     canvas.height = H;
   }
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
   g.fillStyle = colors.panel;
   rr(g, 0.5, 0.5, cssW - 1, cssH - 1, 4);
   g.fill();
@@ -478,8 +478,8 @@ export const drawOverviewCanvas = (
   const mins = ovMins as Float32Array;
   const maxs = ovMaxs as Float32Array;
   const visible = i1 - i0;
-  // 多通道共享采样预算（叠加 64 通道时每通道降至 ~9千样本/帧，总览条视觉无损）
-  const stride = visible > 600_000 ? Math.ceil(visible / Math.max(1000, Math.floor(600_000 / visIdx.length))) : 1;
+  // 按列预算采样：每列约 3 个采样点（缩影视觉无损），64 通道时每帧 ~10 万次访问
+  const stride = Math.max(1, Math.ceil(visible / (cols * 3)));
   const innerY = 2;
   const innerH = cssH - 4;
   for (const ch of visIdx) {
@@ -509,9 +509,24 @@ export const drawOverviewCanvas = (
     g.globalAlpha = 1;
   }
 
-  // 当前视窗矩形
-  const wx0 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - view.windowMs - fullT0) / (fullT1 - fullT0) * cssW;
-  const wx1 = ((view.frozen || !view.follow ? view.rightT : engine.lastT) - fullT0) / (fullT1 - fullT0) * cssW;
+  return { fullT0, fullT1 };
+};
+
+// 总览条视窗矩形（每帧画在展示 canvas 上，拖动跟手；缩影由离屏缓存 drawImage 提供）
+export const drawOverviewWindow = (
+  g: CanvasRenderingContext2D,
+  cssW: number,
+  cssH: number,
+  fullT0: number,
+  fullT1: number,
+  engine: WaveEngine,
+  view: ViewState,
+  colors: ThemeColors
+): void => {
+  if (fullT1 <= fullT0) return;
+  const rightT = view.frozen || !view.follow ? view.rightT : engine.lastT;
+  const wx0 = ((rightT - view.windowMs - fullT0) / (fullT1 - fullT0)) * cssW;
+  const wx1 = ((rightT - fullT0) / (fullT1 - fullT0)) * cssW;
   const clampedX0 = clamp(Math.min(wx0, wx1), 0, cssW);
   const clampedX1 = clamp(Math.max(wx0, wx1), 0, cssW);
   g.fillStyle = colors.accent;
@@ -520,8 +535,6 @@ export const drawOverviewCanvas = (
   g.globalAlpha = 1;
   g.strokeStyle = colors.accent;
   g.strokeRect(clampedX0 + 0.5, 1.5, Math.max(1, clampedX1 - clampedX0 - 1), cssH - 3);
-
-  return { fullT0, fullT1 };
 };
 
 interface Column {

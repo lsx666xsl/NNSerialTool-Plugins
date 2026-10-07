@@ -6,7 +6,8 @@ import { WaveEngine } from './engine';
 import {
   clamp,
   defaultViewState,
-  drawOverviewCanvas,
+  drawOverviewStrip,
+  drawOverviewWindow,
   drawWave,
   fmtDuration,
   fmtValue,
@@ -165,7 +166,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <span class="wavep-label">数据源</span>
         <select class="wavep-select wavep-source"></select>
         <button type="button" class="wavep-btn wavep-overlay">分栏</button>
-        <button type="button" class="wavep-btn wavep-overviewbtn">总览</button>
         <button type="button" class="wavep-btn wavep-style">曲线</button>
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
@@ -179,7 +179,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
         <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
       </div>
-      <canvas class="wavep-ovcanvas" style="display:none" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
+      <canvas class="wavep-ovcanvas" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
     </div>`;
@@ -192,7 +192,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const ovCanvas = el.querySelector('.wavep-ovcanvas') as HTMLCanvasElement;
   const sourceSel = el.querySelector('.wavep-source') as HTMLSelectElement;
   const btnOverlay = el.querySelector('.wavep-overlay') as HTMLButtonElement;
-  const btnOverview = el.querySelector('.wavep-overviewbtn') as HTMLButtonElement;
   const btnFreeze = el.querySelector('.wavep-freeze') as HTMLButtonElement;
   const btnFollow = el.querySelector('.wavep-follow') as HTMLButtonElement;
   const btnCursor = el.querySelector('.wavep-cursorbtn') as HTMLButtonElement;
@@ -435,7 +434,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   // ---------- 工具按钮 ----------
   const updateButtons = () => {
     btnOverlay.textContent = view.overlay ? '叠加' : '分栏';
-    btnOverview.classList.toggle('active', view.overview);
     btnFreeze.textContent = view.frozen ? '已冻结' : '冻结';
     btnFreeze.classList.toggle('active', view.frozen);
     btnFollow.style.display = !view.follow && !view.frozen ? '' : 'none';
@@ -449,14 +447,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
     view.paneScroll = 0; // 叠加无纵向滚动，切回分栏时从头开始
-    updateButtons();
-    markDirty();
-  });
-
-  btnOverview.addEventListener('click', () => {
-    view.overview = !view.overview;
-    view.paneScroll = 0;
-    persist();
     updateButtons();
     markDirty();
   });
@@ -992,11 +982,40 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     })
   );
 
+  // ---------- 总览条（画布外常显）：缩影离屏缓存 + 每帧视窗矩形 ----------
+  // 缩影抽稀按节流重算（数据流时全量重算会把帧预算吃光），视窗矩形每帧画保证拖动跟手
+  const ovCache = document.createElement('canvas');
+  let ovStripAt = 0; // 上次缩影重算时刻（ms）
+  const renderOverview = () => {
+    const now = performance.now();
+    const g = ovCanvas.getContext('2d');
+    if (!g) return;
+    if (!ovRange || now - ovStripAt >= 200) {
+      ovStripAt = now;
+      ovRange = drawOverviewStrip(ovCache, ovCanvas.clientWidth, ovCanvas.clientHeight, engine, buildColors());
+    }
+    const cssW = ovCanvas.clientWidth;
+    const cssH = ovCanvas.clientHeight;
+    const zoom = Number(document.documentElement.style.zoom) || 1;
+    const dpr = (window.devicePixelRatio || 1) * zoom;
+    const W = Math.round(cssW * dpr);
+    const H = Math.round(cssH * dpr);
+    if (ovCanvas.width !== W || ovCanvas.height !== H) {
+      ovCanvas.width = W;
+      ovCanvas.height = H;
+    }
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, cssW, cssH);
+    if (ovRange && ovCache.width > 0) g.drawImage(ovCache, 0, 0, cssW, cssH);
+    if (ovRange) drawOverviewWindow(g, cssW, cssH, ovRange.fullT0, ovRange.fullT1, engine, view, buildColors());
+  };
+
   const draw = () => {
     const theme = ctx.theme();
     if (theme !== lastTheme) {
       lastTheme = theme;
       viewDirty = true;
+      ovStripAt = 0; // 主题色变化：缩影立即重算
     }
     if (canvas.clientWidth !== lastCanvasW) {
       lastCanvasW = canvas.clientWidth;
@@ -1006,14 +1025,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       lastDrawnVersion = engine.version;
       viewDirty = false;
       geom = drawWave(canvas, engine, view, buildColors());
-      // 画布外控件：总览条（总览开关）+ 通道滚动条（分栏溢出）
-      if (view.overview) {
-        ovCanvas.style.display = '';
-        ovRange = drawOverviewCanvas(ovCanvas, engine, view, buildColors());
-      } else {
-        ovCanvas.style.display = 'none';
-        ovRange = null;
-      }
+      renderOverview(); // 总览条常显
       syncVScroll();
     }
   };
@@ -1036,13 +1048,12 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   // ---------- 设置持久化 ----------
   const restore = () => {
     try {
-      const saved = ctx.storage.get<{ overlay?: boolean; windowMs?: number; style?: string; overview?: boolean; colors?: Record<string, string> } | null>(
+      const saved = ctx.storage.get<{ overlay?: boolean; windowMs?: number; style?: string; colors?: Record<string, string> } | null>(
         'wave-view',
         null
       );
       if (!saved) return;
       if (typeof saved.overlay === 'boolean') view.overlay = saved.overlay;
-      if (typeof saved.overview === 'boolean') view.overview = saved.overview;
       if (typeof saved.windowMs === 'number')
         view.windowMs = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, saved.windowMs));
       if (saved.style === 'line' || saved.style === 'dots' || saved.style === 'bars') view.style = saved.style;
@@ -1067,7 +1078,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
 
   const persist = () => {
     try {
-      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, style: view.style, overview: view.overview, colors: { ...colorOverrides } });
+      ctx.storage.set('wave-view', { overlay: view.overlay, windowMs: view.windowMs, style: view.style, colors: { ...colorOverrides } });
     } catch {
       /* 宿主未提供 storage 时静默 */
     }
