@@ -16,6 +16,7 @@ import {
 } from './renderer';
 import { FIRMWARE_FILES } from './firmware';
 import { buildWaveSvg } from './svg-export';
+import { fixedPxUnit, hexToRgb, hsvToRgb, placePalette, rgbToHex, rgbToHsv } from './palette';
 
 const STYLE_ID = 'nnwave-plugin-style';
 
@@ -61,7 +62,40 @@ const CSS = `
   font-size:11px; color:#8a9099; font-variant-numeric:tabular-nums; }
 .theme-dark .wavep-status { color:#7c828c; }
 .wavep-dot { cursor:pointer; }
-.wavep-color-input { position:absolute; width:0; height:0; opacity:0; pointer-events:none; }
+/* 通道调色弹层：Teleport 到 body（position:fixed），自带 theme-dark 类，不依赖挂载点祖先 */
+.wavep-pop { position:fixed; z-index:9999; width:272px; box-sizing:border-box; padding:12px;
+  display:flex; flex-direction:column; gap:10px;
+  background:var(--wavep-pop-bg,#ffffff); color:var(--wavep-pop-fg,#3b414b);
+  border:1px solid rgba(23,26,33,.14); border-radius:10px;
+  box-shadow:0 8px 28px rgba(0,0,0,.18); font-size:12px; }
+.wavep-pop.theme-dark { --wavep-pop-bg:#2b2d30; --wavep-pop-fg:#d6d9de; border-color:rgba(255,255,255,.14); }
+.wavep-pop-head { display:flex; align-items:center; gap:8px; }
+.wavep-pop-title { font-weight:600; flex:1; }
+.wavep-pop-close { border:none; background:transparent; cursor:pointer; color:inherit; opacity:.55;
+  font-size:14px; line-height:1; padding:2px 4px; border-radius:4px; }
+.wavep-pop-close:hover { opacity:1; background:rgba(23,26,33,.06); }
+.wavep-pop.theme-dark .wavep-pop-close:hover { background:rgba(255,255,255,.08); }
+.wavep-pop-body { display:flex; gap:12px; }
+.wavep-pop-left { display:flex; flex-direction:column; gap:8px; width:112px; }
+.wavep-pop-right { display:flex; flex-direction:column; gap:10px; width:124px; }
+.wavep-pop-label { font-size:11px; color:#8a9099; }
+.wavep-pop.theme-dark .wavep-pop-label { color:#7c828c; }
+.wavep-swatches { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+.wavep-swatch { width:100%; height:20px; border-radius:5px; cursor:pointer;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.18); transition:transform .08s; }
+.wavep-swatch:hover { transform:scale(1.08); }
+.wavep-pop.theme-dark .wavep-swatch { box-shadow:inset 0 0 0 1px rgba(255,255,255,.25); }
+.wavep-hex { width:100%; box-sizing:border-box; font-family:Consolas,monospace; font-size:12px; padding:5px 8px;
+  border:1px solid rgba(23,26,33,.14); border-radius:6px; background:transparent; color:inherit; outline:none; }
+.wavep-hex:focus { border-color:rgba(59,111,212,.55); }
+.wavep-sv { position:relative; width:124px; height:124px; border-radius:6px; cursor:crosshair;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.12); }
+.wavep-sv-cursor { position:absolute; width:12px; height:12px; border:2px solid #fff; border-radius:50%;
+  box-shadow:0 0 0 1px rgba(0,0,0,.55); transform:translate(-50%,-50%); pointer-events:none; }
+.wavep-hue { position:relative; height:12px; border-radius:6px; cursor:pointer;
+  background:linear-gradient(to right,#f00,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,#f00); }
+.wavep-hue-cursor { position:absolute; top:-2px; width:6px; height:16px; border:2px solid #fff; border-radius:3px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.5); transform:translateX(-50%); pointer-events:none; }
 .wavep-empty { font-size:12px; color:#9ca3af; }
 `;
 
@@ -121,7 +155,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
-      <input type="color" class="wavep-color-input" />
     </div>`;
 
   const root = el.querySelector('.wavep') as HTMLElement;
@@ -150,10 +183,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const engine = new WaveEngine();
   engine.setProtocol({ id: 'nnwave', name: 'NN-Wave', createParser: () => createNnWaveParser() });
 
-  // 通道颜色覆盖（通道索引 → 十六进制色）：图例色块点击换色、双击恢复默认
+  // 通道颜色覆盖（通道索引 → 十六进制色）：点击图例色块打开调色弹层、双击恢复默认
   const colorOverrides: Record<number, string> = {};
-  let pendingColorIndex = -1;
-  const colorInput = el.querySelector('.wavep-color-input') as HTMLInputElement;
   const buildColors = () => {
     const base = ctx.themeColors();
     const entries = Object.entries(colorOverrides);
@@ -166,6 +197,181 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       if (Number.isInteger(idx) && idx >= 0 && idx < n) palette[idx] = v;
     }
     return { ...base, palette };
+  };
+
+  // ---------- 通道调色弹层（自绘矩形弹层：原生取色器不跟随根节点 zoom 且样式不可控） ----------
+  const PRESET_COLORS = ['#E5484D', '#F76B15', '#FFC53D', '#46A758', '#12A594', '#3E63DD', '#8E4EC6', '#E93D82'];
+  const POP_W = 272; // 与 .wavep-pop 的 width 保持一致（border-box），定位几何按它钳制
+  let paletteOpenIndex = -1;
+  let paletteCleanup: (() => void) | null = null;
+  const closePalette = () => {
+    paletteCleanup?.();
+    paletteCleanup = null;
+    paletteOpenIndex = -1;
+  };
+
+  const openPalette = (index: number, anchorEl: HTMLElement) => {
+    if (paletteOpenIndex === index && paletteCleanup) {
+      closePalette(); // 再点同一通道色块 = 收起
+      return;
+    }
+    closePalette();
+    paletteOpenIndex = index;
+
+    const unit = fixedPxUnit();
+    const pop = document.createElement('div');
+    pop.className = 'wavep-pop' + (ctx.theme() === 'dark' ? ' theme-dark' : '');
+    const chName = esc(engine.names[index] ?? `CH${index + 1}`);
+    pop.innerHTML = `
+      <div class="wavep-pop-head">
+        <span class="wavep-pop-title">${chName} 颜色</span>
+        <button type="button" class="wavep-pop-close" title="关闭">✕</button>
+      </div>
+      <div class="wavep-pop-body">
+        <div class="wavep-pop-left">
+          <span class="wavep-pop-label">常用色</span>
+          <div class="wavep-swatches">${PRESET_COLORS.map((c) => `<span class="wavep-swatch" data-color="${c}" style="background:${c}" title="${c}"></span>`).join('')}</div>
+          <span class="wavep-pop-label">自定义</span>
+          <input type="text" class="wavep-hex" maxlength="7" spellcheck="false" />
+        </div>
+        <div class="wavep-pop-right">
+          <div class="wavep-sv" title="饱和度 / 明度"><div class="wavep-sv-cursor"></div></div>
+          <div class="wavep-hue" title="色相"><div class="wavep-hue-cursor"></div></div>
+        </div>
+      </div>`;
+    document.body.appendChild(pop);
+
+    const sv = pop.querySelector('.wavep-sv') as HTMLElement;
+    const svCursor = pop.querySelector('.wavep-sv-cursor') as HTMLElement;
+    const hue = pop.querySelector('.wavep-hue') as HTMLElement;
+    const hueCursor = pop.querySelector('.wavep-hue-cursor') as HTMLElement;
+    const hexInput = pop.querySelector('.wavep-hex') as HTMLInputElement;
+    const btnClose = pop.querySelector('.wavep-pop-close') as HTMLButtonElement;
+
+    const initial = buildColors().palette[index % buildColors().palette.length];
+    const initRgb = hexToRgb(initial) ?? { r: 255, g: 255, b: 255 };
+    let hsv = rgbToHsv(initRgb.r, initRgb.g, initRgb.b);
+
+    // 颜色改动立即上屏（画布与图例实时跟随）；落盘统一在手势结束/关闭时做，
+    // 避免 pointermove 高频写 storage
+    const applyLive = (hex: string) => {
+      colorOverrides[index] = hex;
+      markDirty();
+      updateLegend();
+    };
+    const syncUi = () => {
+      const { h, s, v } = hsv;
+      sv.style.background = `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(${Math.round(h)}, 100%, 50%))`;
+      svCursor.style.left = `${s * 100}%`;
+      svCursor.style.top = `${(1 - v) * 100}%`;
+      hueCursor.style.left = `${(h / 360) * 100}%`;
+      hexInput.value = rgbToHex(hsvToRgb(h, s, v));
+    };
+
+    const dragTo = (e: PointerEvent, kind: 'sv' | 'hue') => {
+      const target = kind === 'sv' ? sv : hue;
+      const r = target.getBoundingClientRect(); // 视觉像素，与 clientX/Y 同基准
+      const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / (r.width || 1)));
+      const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / (r.height || 1)));
+      hsv = kind === 'sv' ? { ...hsv, s: fx, v: 1 - fy } : { ...hsv, h: fx * 360 };
+      syncUi();
+      applyLive(rgbToHex(hsvToRgb(hsv.h, hsv.s, hsv.v)));
+    };
+    const bindDrag = (target: HTMLElement, kind: 'sv' | 'hue') => {
+      target.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        target.setPointerCapture(e.pointerId);
+        dragTo(e, kind);
+      });
+      target.addEventListener('pointermove', (e) => {
+        if (target.hasPointerCapture(e.pointerId)) dragTo(e, kind);
+      });
+      const end = (e: PointerEvent) => {
+        if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
+        persist(); // 手势结束落盘一次
+      };
+      target.addEventListener('pointerup', end);
+      target.addEventListener('pointercancel', end);
+    };
+    bindDrag(sv, 'sv');
+    bindDrag(hue, 'hue');
+
+    pop.querySelectorAll('.wavep-swatch').forEach((sw) =>
+      sw.addEventListener('click', () => {
+        const c = (sw as HTMLElement).dataset.color ?? '';
+        const rgb = hexToRgb(c);
+        if (!rgb) return;
+        hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+        syncUi();
+        applyLive(c);
+        persist();
+      })
+    );
+
+    const commitHex = () => {
+      const rgb = hexToRgb(hexInput.value);
+      if (!rgb) {
+        syncUi(); // 非法输入：回显当前色
+        return;
+      }
+      hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+      syncUi();
+      applyLive(rgbToHex(rgb));
+      persist();
+    };
+    hexInput.addEventListener('change', commitHex);
+    hexInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitHex();
+        hexInput.blur();
+      }
+    });
+
+    // 定位：锚定色块、视口钳制；窗口尺寸变化时重算（色块随图例重建会断连 → 收起）
+    const place = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const { left, top } = placePalette(
+        { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+        POP_W,
+        pop.offsetHeight,
+        window.innerWidth,
+        window.innerHeight,
+        8,
+        8,
+        unit
+      );
+      pop.style.left = `${left / unit}px`;
+      pop.style.top = `${top / unit}px`;
+    };
+    place();
+    const onResize = () => {
+      if (!anchorEl.isConnected) {
+        closePalette();
+        return;
+      }
+      place();
+    };
+    window.addEventListener('resize', onResize);
+
+    const onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (pop.contains(t) || anchorEl.contains(t)) return;
+      closePalette();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closePalette();
+    };
+    document.addEventListener('pointerdown', onDocPointerDown, true);
+    window.addEventListener('keydown', onKey);
+    btnClose.addEventListener('click', closePalette);
+
+    paletteCleanup = () => {
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('pointerdown', onDocPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+      pop.remove();
+    };
   };
 
   const unsubs: Array<() => void> = [];
@@ -447,6 +653,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   // 此前每 200ms 整体重建 innerHTML——点击经常落在重建瞬间被吞，显隐要点好几次才生效。
   let legendChipCount = -1;
   const rebuildLegendStructure = () => {
+    closePalette(); // 图例 DOM 即将重建，旧色块锚点失效
     if (engine.channels.length === 0) {
       legendEl.innerHTML = '<span class="wavep-empty">选择数据源并收到数据后，通道将出现在这里</span>';
       legendChipCount = 0;
@@ -492,11 +699,9 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     const chip = target.closest('.wavep-chip') as HTMLElement | null;
     if (!chip) return;
     const index = Number(chip.dataset.index);
-    // 色块点击 = 换色（打开取色器）；其余区域 = 显隐切换
+    // 色块点击 = 打开调色弹层；其余区域 = 显隐切换
     if (target.closest('.wavep-dot')) {
-      pendingColorIndex = index;
-      colorInput.value = buildColors().palette[index % buildColors().palette.length];
-      colorInput.click();
+      openPalette(index, target.closest('.wavep-dot') as HTMLElement);
       return;
     }
     engine.visible[index] = !(engine.visible[index] !== false);
@@ -515,17 +720,6 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
       markDirty();
       updateLegend();
     }
-  });
-  colorInput.addEventListener('change', () => {
-    if (pendingColorIndex < 0) return;
-    const v = colorInput.value;
-    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-      colorOverrides[pendingColorIndex] = v;
-      persist();
-      markDirty();
-      updateLegend();
-    }
-    pendingColorIndex = -1;
   });
 
   const renderStatus = () => {
@@ -625,6 +819,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   };
   return () => {
     cancelAnimationFrame(rafId);
+    closePalette(); // 视图卸载时收起弹层并解绑全局监听
     resizeObserver?.disconnect();
     unsubs.forEach((fn) => fn());
     persist();

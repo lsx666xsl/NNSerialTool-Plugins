@@ -1,12 +1,12 @@
 {
   "id": "wave",
   "name": "波形",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "apiVersion": 1,
   "type": "view",
   "entry": "main.js",
   "author": "NNSerialTool",
-  "description": "串口/网络数据的实时波形显示（NN-Wave 协议，独立更新版）",
+  "description": "串口/网络数据的实时波形显示（NN-Wave 协议，最多 64 通道）",
   "permissions": ["storage"],
   "minAppVersion": "0.5.2"
 }

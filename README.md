@@ -188,15 +188,18 @@ export default function activate(ctx) {
 
 ## 六、打包与上架
 
-- CI 在 PR 上做校验 + 构建（esbuild 编译带 `src/` 的插件，编译错误直接挡在 PR）；合并到 `main` 后自动
-  zip 打包到 `packages/<id>-<version>.zip`、计算 sha256、重写 `index.json` 并提交回仓库；
+- 打包/索引由**本地脚本**管理（CI 工作流已移除，避免机器人自动 pin 竞速）：
+  `npm run build` 构建 + 生成 `packages/<id>-<version>.zip`；
+  `node scripts/build-index.mjs --commit <内容提交SHA>` 生成索引，并把 `download`
+  钉到不可变的 `@<commit>` 地址（jsDelivr CDN，备源 GitHub raw）；
 - 市场索引条目自动生成：`{id, name, version, type, description, author,
-  download, sha256, size, apiVersion}`；`download` 用 jsDelivr CDN（备源 GitHub raw）；
-- **`plugins/wave/`（波形外置版）**：应用内置波形的外置副本（同源引擎/渲染器，DOM 挂载契约实现）。
-  过渡期与内置版共存——功能切换会出现两个「波形」入口，属预期；应用侧移除内置版后即为唯一入口。
-  本地构建：`npm install && npm run build`；
-- **版本升级 = 改 plugin.json 的 version + 提 PR**；同版本改动不会被市场识别为更新；
-- 删除插件 = 删 `plugins/<id>/` 目录（CI 会从索引移除）。
+  download, sha256, size, apiVersion}`；
+- **`plugins/wave/`（波形外置版）**：DOM 挂载契约实现（引擎/渲染器自包含）。
+  **最多支持 64 通道**——NN-Wave 帧内 N 字段为 1 字节，固件模板 `NNWAVE_MAX_CHANNELS=64`
+  与上位机解析器 `MAX_CHANNELS=64` 两端一致校验，超出整帧丢弃并计解析错误；
+  每通道 200 万点环形缓冲。本地构建：`npm install && npm run build`；
+- **版本升级 = 改 plugin.json 的 version + 本地重新打包/重建索引**；同版本改动不会被市场识别为更新；
+- 删除插件 = 删 `plugins/<id>/` 目录后本地重跑 build-index（索引自动移除）。
 
 ## 七、兼容性
 

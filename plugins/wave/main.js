@@ -472,10 +472,12 @@ var FIRMWARE_FILES = [
     name: "nnwave.h",
     text: `/*
  * NN-Wave v1 —— 轻量二进制波形协议（发送端）
+ * 本文件为纯 C99 代码，C 与 C++ 工程均可直接包含（声明已用 extern "C" 包裹）。
  * 帧格式: [AA 55][type][N][seq][float32×N 小端][CRC8]
  *   type 0x01 = 数据帧（N 个 float32）
  *   type 0x02 = 通道名元数据帧（payload 为若干 [len][utf8]，补 0x00 到 4N 字节）
  *   CRC8 多项式 0x07，初值 0x00，覆盖 type..data
+ * 通道数上限：N 为 1 字节，协议/固件/上位机统一上限 64（NNWAVE_MAX_CHANNELS）
  * 上位机：NNSerialTool 波形插件（协议选 NN-Wave）
  */
 #ifndef NNWAVE_H
@@ -484,6 +486,11 @@ var FIRMWARE_FILES = [
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* 通道数硬上限：帧内 N 字段 1 字节 + 上位机解析器同值校验，两端一致 */
 #define NNWAVE_MAX_CHANNELS 64
 
 typedef struct {
@@ -494,11 +501,15 @@ typedef struct {
 /* 初始化：注入发送回调（如 HAL_UART_Transmit 的包装） */
 int nnwave_init(nnwave_t *h, int (*write)(const uint8_t *data, size_t len));
 
-/* 发送一帧数据：channels[0..count-1] 对应波形 CH1..CHn */
+/* 发送一帧数据：channels[0..count-1] 对应波形 CH1..CHn（count ≤ NNWAVE_MAX_CHANNELS） */
 int nnwave_send(nnwave_t *h, const float *channels, uint8_t count);
 
 /* （可选）发送通道名，波形图例将显示这些名字；上电时发一次即可 */
 int nnwave_send_names(nnwave_t *h, const char *const *names, uint8_t count);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* NNWAVE_H */
 `
@@ -603,10 +614,17 @@ while (1) {
 
 NNSerialTool 波形插件 → 数据源选对应会话。
 
+## 通道数上限
+
+**最多 64 通道**（协议 N 字段为 1 字节，固件 \`NNWAVE_MAX_CHANNELS\` 与上位机解析器统一按 64 校验，
+超出即整帧丢弃）。通道数在 \`nnwave_send\` 的 \`count\` 参数里逐帧指定，可动态增减；
+上位机按本帧 N 值自动扩展图例。每通道在引擎里为 200 万点环形缓冲。
+
 ## 带宽参考
 
 帧长 = 6 + 4×通道数 字节。
-8 通道 @100Hz ≈ 3.3 KB/s，9600 波特率即可跑；1 通道 @1kHz ≈ 10 KB/s。
+8 通道 @100Hz ≈ 3.3 KB/s，9600 波特率即可跑；1 通道 @1kHz ≈ 10 KB/s；
+64 通道 @100Hz ≈ 26.2 KB/s，建议 115200 及以上波特率。
 大端核（极少见）需在 \`nnwave_send\` 里逐字节装填 float。`
   }
 ];
@@ -748,6 +766,93 @@ var buildWaveSvg = (engine, opts, colors) => {
   return parts.join("\n");
 };
 
+// plugins/wave/src/palette.ts
+function hsvToRgb(h, s, v) {
+  const hh = (h % 360 + 360) % 360 / 60;
+  const ss = Math.min(1, Math.max(0, s));
+  const vv = Math.min(1, Math.max(0, v));
+  const c = vv * ss;
+  const x = c * (1 - Math.abs(hh % 2 - 1));
+  const m = vv - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hh < 1) [r, g, b] = [c, x, 0];
+  else if (hh < 2) [r, g, b] = [x, c, 0];
+  else if (hh < 3) [r, g, b] = [0, c, x];
+  else if (hh < 4) [r, g, b] = [0, x, c];
+  else if (hh < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return {
+    r: Math.round((r + m) * 255),
+    g: Math.round((g + m) * 255),
+    b: Math.round((b + m) * 255)
+  };
+}
+function rgbToHsv(r, g, b) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const d = max - min;
+  let h = 0;
+  if (d > 0) {
+    if (max === rn) h = 60 * ((gn - bn) / d % 6);
+    else if (max === gn) h = 60 * ((bn - rn) / d + 2);
+    else h = 60 * ((rn - gn) / d + 4);
+  }
+  if (h < 0) h += 360;
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+}
+function rgbToHex({ r, g, b }) {
+  const to2 = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+  return `#${to2(r)}${to2(g)}${to2(b)}`.toUpperCase();
+}
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+}
+function placePalette(anchor, popW, popH, vw, vh, margin = 8, gap = 8, scale = 1) {
+  const w = popW * scale;
+  const h = popH * scale;
+  const cx = anchor.left + anchor.width / 2;
+  const left = Math.max(margin, Math.min(cx - w / 2, vw - margin - w));
+  let placement = "above";
+  let top = anchor.top - gap - h;
+  if (top < margin) {
+    placement = "below";
+    top = anchor.bottom + gap;
+  }
+  if (top + h > vh - margin) top = Math.max(margin, vh - margin - h);
+  return { left, top, placement };
+}
+var zoomAffectsFixed = null;
+function detectZoomAffectsFixed() {
+  const html = document.documentElement;
+  const prev = html.style.zoom;
+  try {
+    html.style.zoom = "2";
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;top:100px;left:0;width:0;height:0;visibility:hidden;pointer-events:none;";
+    document.body.appendChild(probe);
+    const top = probe.getBoundingClientRect().top;
+    probe.remove();
+    return Math.abs(top - 200) < Math.abs(top - 100);
+  } catch {
+    return true;
+  } finally {
+    html.style.zoom = prev;
+  }
+}
+function fixedPxUnit() {
+  const zoom = Number(document.documentElement.style.zoom) || 1;
+  if (zoomAffectsFixed === null) zoomAffectsFixed = detectZoomAffectsFixed();
+  return zoomAffectsFixed ? zoom : 1;
+}
+
 // plugins/wave/src/main.ts
 var STYLE_ID = "nnwave-plugin-style";
 var CSS = `
@@ -792,7 +897,40 @@ var CSS = `
   font-size:11px; color:#8a9099; font-variant-numeric:tabular-nums; }
 .theme-dark .wavep-status { color:#7c828c; }
 .wavep-dot { cursor:pointer; }
-.wavep-color-input { position:absolute; width:0; height:0; opacity:0; pointer-events:none; }
+/* 通道调色弹层：Teleport 到 body（position:fixed），自带 theme-dark 类，不依赖挂载点祖先 */
+.wavep-pop { position:fixed; z-index:9999; width:272px; box-sizing:border-box; padding:12px;
+  display:flex; flex-direction:column; gap:10px;
+  background:var(--wavep-pop-bg,#ffffff); color:var(--wavep-pop-fg,#3b414b);
+  border:1px solid rgba(23,26,33,.14); border-radius:10px;
+  box-shadow:0 8px 28px rgba(0,0,0,.18); font-size:12px; }
+.wavep-pop.theme-dark { --wavep-pop-bg:#2b2d30; --wavep-pop-fg:#d6d9de; border-color:rgba(255,255,255,.14); }
+.wavep-pop-head { display:flex; align-items:center; gap:8px; }
+.wavep-pop-title { font-weight:600; flex:1; }
+.wavep-pop-close { border:none; background:transparent; cursor:pointer; color:inherit; opacity:.55;
+  font-size:14px; line-height:1; padding:2px 4px; border-radius:4px; }
+.wavep-pop-close:hover { opacity:1; background:rgba(23,26,33,.06); }
+.wavep-pop.theme-dark .wavep-pop-close:hover { background:rgba(255,255,255,.08); }
+.wavep-pop-body { display:flex; gap:12px; }
+.wavep-pop-left { display:flex; flex-direction:column; gap:8px; width:112px; }
+.wavep-pop-right { display:flex; flex-direction:column; gap:10px; width:124px; }
+.wavep-pop-label { font-size:11px; color:#8a9099; }
+.wavep-pop.theme-dark .wavep-pop-label { color:#7c828c; }
+.wavep-swatches { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+.wavep-swatch { width:100%; height:20px; border-radius:5px; cursor:pointer;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.18); transition:transform .08s; }
+.wavep-swatch:hover { transform:scale(1.08); }
+.wavep-pop.theme-dark .wavep-swatch { box-shadow:inset 0 0 0 1px rgba(255,255,255,.25); }
+.wavep-hex { width:100%; box-sizing:border-box; font-family:Consolas,monospace; font-size:12px; padding:5px 8px;
+  border:1px solid rgba(23,26,33,.14); border-radius:6px; background:transparent; color:inherit; outline:none; }
+.wavep-hex:focus { border-color:rgba(59,111,212,.55); }
+.wavep-sv { position:relative; width:124px; height:124px; border-radius:6px; cursor:crosshair;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.12); }
+.wavep-sv-cursor { position:absolute; width:12px; height:12px; border:2px solid #fff; border-radius:50%;
+  box-shadow:0 0 0 1px rgba(0,0,0,.55); transform:translate(-50%,-50%); pointer-events:none; }
+.wavep-hue { position:relative; height:12px; border-radius:6px; cursor:pointer;
+  background:linear-gradient(to right,#f00,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,#f00); }
+.wavep-hue-cursor { position:absolute; top:-2px; width:6px; height:16px; border:2px solid #fff; border-radius:3px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.5); transform:translateX(-50%); pointer-events:none; }
 .wavep-empty { font-size:12px; color:#9ca3af; }
 `;
 var ensureStyle = () => {
@@ -844,7 +982,6 @@ var mountWave = (el, ctx) => {
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
       <div class="wavep-status"><span class="wavep-stats"></span><span class="wavep-window"></span></div>
-      <input type="color" class="wavep-color-input" />
     </div>`;
   const root = el.querySelector(".wavep");
   const canvas = el.querySelector(".wavep-canvas");
@@ -869,8 +1006,6 @@ var mountWave = (el, ctx) => {
   const engine = new WaveEngine();
   engine.setProtocol({ id: "nnwave", name: "NN-Wave", createParser: () => createNnWaveParser() });
   const colorOverrides = {};
-  let pendingColorIndex = -1;
-  const colorInput = el.querySelector(".wavep-color-input");
   const buildColors = () => {
     const base = ctx.themeColors();
     const entries = Object.entries(colorOverrides);
@@ -882,6 +1017,165 @@ var mountWave = (el, ctx) => {
       if (Number.isInteger(idx) && idx >= 0 && idx < n) palette[idx] = v;
     }
     return { ...base, palette };
+  };
+  const PRESET_COLORS = ["#E5484D", "#F76B15", "#FFC53D", "#46A758", "#12A594", "#3E63DD", "#8E4EC6", "#E93D82"];
+  const POP_W = 272;
+  let paletteOpenIndex = -1;
+  let paletteCleanup = null;
+  const closePalette = () => {
+    paletteCleanup?.();
+    paletteCleanup = null;
+    paletteOpenIndex = -1;
+  };
+  const openPalette = (index, anchorEl) => {
+    if (paletteOpenIndex === index && paletteCleanup) {
+      closePalette();
+      return;
+    }
+    closePalette();
+    paletteOpenIndex = index;
+    const unit = fixedPxUnit();
+    const pop = document.createElement("div");
+    pop.className = "wavep-pop" + (ctx.theme() === "dark" ? " theme-dark" : "");
+    const chName = esc2(engine.names[index] ?? `CH${index + 1}`);
+    pop.innerHTML = `
+      <div class="wavep-pop-head">
+        <span class="wavep-pop-title">${chName} 颜色</span>
+        <button type="button" class="wavep-pop-close" title="关闭">✕</button>
+      </div>
+      <div class="wavep-pop-body">
+        <div class="wavep-pop-left">
+          <span class="wavep-pop-label">常用色</span>
+          <div class="wavep-swatches">${PRESET_COLORS.map((c) => `<span class="wavep-swatch" data-color="${c}" style="background:${c}" title="${c}"></span>`).join("")}</div>
+          <span class="wavep-pop-label">自定义</span>
+          <input type="text" class="wavep-hex" maxlength="7" spellcheck="false" />
+        </div>
+        <div class="wavep-pop-right">
+          <div class="wavep-sv" title="饱和度 / 明度"><div class="wavep-sv-cursor"></div></div>
+          <div class="wavep-hue" title="色相"><div class="wavep-hue-cursor"></div></div>
+        </div>
+      </div>`;
+    document.body.appendChild(pop);
+    const sv = pop.querySelector(".wavep-sv");
+    const svCursor = pop.querySelector(".wavep-sv-cursor");
+    const hue = pop.querySelector(".wavep-hue");
+    const hueCursor = pop.querySelector(".wavep-hue-cursor");
+    const hexInput = pop.querySelector(".wavep-hex");
+    const btnClose = pop.querySelector(".wavep-pop-close");
+    const initial = buildColors().palette[index % buildColors().palette.length];
+    const initRgb = hexToRgb(initial) ?? { r: 255, g: 255, b: 255 };
+    let hsv = rgbToHsv(initRgb.r, initRgb.g, initRgb.b);
+    const applyLive = (hex) => {
+      colorOverrides[index] = hex;
+      markDirty();
+      updateLegend();
+    };
+    const syncUi = () => {
+      const { h, s, v } = hsv;
+      sv.style.background = `linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, hsl(${Math.round(h)}, 100%, 50%))`;
+      svCursor.style.left = `${s * 100}%`;
+      svCursor.style.top = `${(1 - v) * 100}%`;
+      hueCursor.style.left = `${h / 360 * 100}%`;
+      hexInput.value = rgbToHex(hsvToRgb(h, s, v));
+    };
+    const dragTo = (e, kind) => {
+      const target = kind === "sv" ? sv : hue;
+      const r = target.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / (r.width || 1)));
+      const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / (r.height || 1)));
+      hsv = kind === "sv" ? { ...hsv, s: fx, v: 1 - fy } : { ...hsv, h: fx * 360 };
+      syncUi();
+      applyLive(rgbToHex(hsvToRgb(hsv.h, hsv.s, hsv.v)));
+    };
+    const bindDrag = (target, kind) => {
+      target.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        target.setPointerCapture(e.pointerId);
+        dragTo(e, kind);
+      });
+      target.addEventListener("pointermove", (e) => {
+        if (target.hasPointerCapture(e.pointerId)) dragTo(e, kind);
+      });
+      const end = (e) => {
+        if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
+        persist();
+      };
+      target.addEventListener("pointerup", end);
+      target.addEventListener("pointercancel", end);
+    };
+    bindDrag(sv, "sv");
+    bindDrag(hue, "hue");
+    pop.querySelectorAll(".wavep-swatch").forEach(
+      (sw) => sw.addEventListener("click", () => {
+        const c = sw.dataset.color ?? "";
+        const rgb = hexToRgb(c);
+        if (!rgb) return;
+        hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+        syncUi();
+        applyLive(c);
+        persist();
+      })
+    );
+    const commitHex = () => {
+      const rgb = hexToRgb(hexInput.value);
+      if (!rgb) {
+        syncUi();
+        return;
+      }
+      hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+      syncUi();
+      applyLive(rgbToHex(rgb));
+      persist();
+    };
+    hexInput.addEventListener("change", commitHex);
+    hexInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitHex();
+        hexInput.blur();
+      }
+    });
+    const place = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const { left, top } = placePalette(
+        { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+        POP_W,
+        pop.offsetHeight,
+        window.innerWidth,
+        window.innerHeight,
+        8,
+        8,
+        unit
+      );
+      pop.style.left = `${left / unit}px`;
+      pop.style.top = `${top / unit}px`;
+    };
+    place();
+    const onResize = () => {
+      if (!anchorEl.isConnected) {
+        closePalette();
+        return;
+      }
+      place();
+    };
+    window.addEventListener("resize", onResize);
+    const onDocPointerDown = (e) => {
+      const t = e.target;
+      if (pop.contains(t) || anchorEl.contains(t)) return;
+      closePalette();
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") closePalette();
+    };
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    btnClose.addEventListener("click", closePalette);
+    paletteCleanup = () => {
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("pointerdown", onDocPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+      pop.remove();
+    };
   };
   const unsubs = [];
   unsubs.push(ctx.onRawData((e) => engine.handleRaw(e)));
@@ -1110,6 +1404,7 @@ var mountWave = (el, ctx) => {
   });
   let legendChipCount = -1;
   const rebuildLegendStructure = () => {
+    closePalette();
     if (engine.channels.length === 0) {
       legendEl.innerHTML = '<span class="wavep-empty">选择数据源并收到数据后，通道将出现在这里</span>';
       legendChipCount = 0;
@@ -1149,9 +1444,7 @@ var mountWave = (el, ctx) => {
     if (!chip) return;
     const index = Number(chip.dataset.index);
     if (target.closest(".wavep-dot")) {
-      pendingColorIndex = index;
-      colorInput.value = buildColors().palette[index % buildColors().palette.length];
-      colorInput.click();
+      openPalette(index, target.closest(".wavep-dot"));
       return;
     }
     engine.visible[index] = !(engine.visible[index] !== false);
@@ -1169,17 +1462,6 @@ var mountWave = (el, ctx) => {
       markDirty();
       updateLegend();
     }
-  });
-  colorInput.addEventListener("change", () => {
-    if (pendingColorIndex < 0) return;
-    const v = colorInput.value;
-    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-      colorOverrides[pendingColorIndex] = v;
-      persist();
-      markDirty();
-      updateLegend();
-    }
-    pendingColorIndex = -1;
   });
   const renderStatus = () => {
     const s = engine.stats;
@@ -1266,6 +1548,7 @@ var mountWave = (el, ctx) => {
   };
   return () => {
     cancelAnimationFrame(rafId);
+    closePalette();
     resizeObserver?.disconnect();
     unsubs.forEach((fn) => fn());
     persist();
