@@ -1,6 +1,6 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-10-07T08:13:24.245Z",
+  "updatedAt": "2026-10-07T08:13:25.484Z",
   "plugins": [
     {
       "id": "hello-view",
@@ -12,7 +12,7 @@
       "apiVersion": 1,
       "size": 1476,
       "sha256": "52768eb218ac33c9063ada39d52046fe0737d29257f4b16dcd44f7633939b6d1",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/hello-view-1.0.0.zip"
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@b6db507c3806b5dc71ac812cd91d64a839712b2a/packages/hello-view-1.0.0.zip"
     },
     {
       "id": "wave",
@@ -25,7 +25,7 @@
       "minAppVersion": "0.5.2",
       "size": 14923,
       "sha256": "490287ac290c590e85fd9dac2b40de05234d525bacdc59ecd2fe1498be584f56",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/wave-1.8.1.zip"
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@b6db507c3806b5dc71ac812cd91d64a839712b2a/packages/wave-1.8.1.zip"
     }
   ]
 }
