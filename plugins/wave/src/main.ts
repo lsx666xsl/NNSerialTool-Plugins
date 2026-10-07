@@ -333,16 +333,22 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         scaleY(findPaneChannel(y), factor);
         return;
       }
-      const tAt = timeAtX(x);
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
-      const rightEdge = geom.plotLeft + geom.plotWidth;
-      const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
       view.windowMs = newWindow;
-      if (view.follow && x > rightEdge - 40) {
-        // 贴右缘滚轮：保持跟随
+      if (view.follow) {
+        // 跟随中：右缘锚定最新数据——缩放不脱离实时流（旧逻辑光标不在右缘就
+        // 解除跟随，新数据持续右移，窗口冻结在原地 → 波形"消失"）
+        view.rightT = engine.lastT;
       } else {
-        view.follow = newRightT >= engine.lastT - 1;
-        view.rightT = view.follow ? engine.lastT : newRightT;
+        // 非跟随：围绕光标缩放，右缘钳制在数据范围内（拖不进空白未来）
+        const tAt = timeAtX(x);
+        const rightEdge = geom.plotLeft + geom.plotWidth;
+        const newRightT = tAt + ((rightEdge - x) / geom.plotWidth) * newWindow;
+        const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+        const minRightT = firstT + newWindow;
+        view.rightT = newRightT >= engine.lastT - 1
+          ? engine.lastT
+          : Math.max(newRightT, Math.min(minRightT, engine.lastT));
       }
       updateButtons();
       markDirty();
@@ -384,7 +390,10 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     const { x, y } = pointerPos(e);
     if (drag.kind === 'pan') {
       const dt = ((x - drag.startX) / geom.plotWidth) * view.windowMs;
-      view.rightT = drag.startRightT - dt;
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const minRightT = firstT + view.windowMs;
+      // 右缘钳制在最新数据（拖不出空白未来）；左缘钳制在数据起点
+      view.rightT = Math.min(Math.max(drag.startRightT - dt, Math.min(minRightT, engine.lastT)), engine.lastT);
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
     } else {

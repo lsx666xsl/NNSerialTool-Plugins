@@ -1020,15 +1020,17 @@ var mountWave = (el, ctx) => {
         scaleY(findPaneChannel(y), factor);
         return;
       }
-      const tAt = timeAtX(x);
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
-      const rightEdge = geom.plotLeft + geom.plotWidth;
-      const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
       view.windowMs = newWindow;
-      if (view.follow && x > rightEdge - 40) {
+      if (view.follow) {
+        view.rightT = engine.lastT;
       } else {
-        view.follow = newRightT >= engine.lastT - 1;
-        view.rightT = view.follow ? engine.lastT : newRightT;
+        const tAt = timeAtX(x);
+        const rightEdge = geom.plotLeft + geom.plotWidth;
+        const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
+        const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+        const minRightT = firstT + newWindow;
+        view.rightT = newRightT >= engine.lastT - 1 ? engine.lastT : Math.max(newRightT, Math.min(minRightT, engine.lastT));
       }
       updateButtons();
       markDirty();
@@ -1062,7 +1064,9 @@ var mountWave = (el, ctx) => {
     const { x, y } = pointerPos(e);
     if (drag.kind === "pan") {
       const dt = (x - drag.startX) / geom.plotWidth * view.windowMs;
-      view.rightT = drag.startRightT - dt;
+      const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
+      const minRightT = firstT + view.windowMs;
+      view.rightT = Math.min(Math.max(drag.startRightT - dt, Math.min(minRightT, engine.lastT)), engine.lastT);
       view.follow = !view.frozen && view.rightT >= engine.lastT - 1;
       if (view.follow) view.rightT = engine.lastT;
     } else {
