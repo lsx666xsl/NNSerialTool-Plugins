@@ -19,6 +19,7 @@ import {
   type YRange,
 } from './renderer';
 import { FIRMWARE_FILES } from './firmware';
+import { NNPRINTF_FILES } from './nnprintf-export';
 import { buildWaveSvg } from './svg-export';
 import { fixedPxUnit, hexToRgb, hsvToRgb, placePalette, rgbToHex, rgbToHsv } from './palette';
 
@@ -160,6 +161,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
         <button type="button" class="wavep-btn wavep-clear">清空</button>
         <button type="button" class="wavep-btn wavep-export">导出SVG</button>
         <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
+        <button type="button" class="wavep-btn wavep-export-loglib">导出日志库</button>
       </div>
       <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
       <div class="wavep-legend"></div>
@@ -178,6 +180,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   const btnClear = el.querySelector('.wavep-clear') as HTMLButtonElement;
   const btnSvgExport = el.querySelector('.wavep-export') as HTMLButtonElement;
   const btnExport = el.querySelector('.wavep-export-protocol') as HTMLButtonElement;
+  const btnLogLibExport = el.querySelector('.wavep-export-loglib') as HTMLButtonElement;
   const legendEl = el.querySelector('.wavep-legend') as HTMLElement;
   const statsEl = el.querySelector('.wavep-stats') as HTMLElement;
   const windowEl = el.querySelector('.wavep-window') as HTMLElement;
@@ -506,8 +509,21 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     })();
   };
 
+  // 导出 NNPrintf 日志库：分级日志头文件（[LEVEL]-- 前缀与上位机消息区着色配套）
+  const exportLogLib = () => {
+    void (async () => {
+      if (!ctx.exportTextFiles) {
+        ctx.notify('当前应用版本过旧，不支持文件导出');
+        return;
+      }
+      const dir = await ctx.exportTextFiles('选择日志库导出目录', NNPRINTF_FILES, 'NNPrintf日志库');
+      if (dir) ctx.notify(`NNPrintf.h 已导出到 ${dir} 的 NNPrintf日志库 子目录`);
+    })();
+  };
+
   btnSvgExport.addEventListener('click', exportSvg);
   btnExport.addEventListener('click', exportProtocol);
+  btnLogLibExport.addEventListener('click', exportLogLib);
 
   // ---------- 交互换算 ----------
   const pointerPos = (e: PointerEvent | WheelEvent | MouseEvent): { x: number; y: number } => {
