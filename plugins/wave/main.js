@@ -1772,6 +1772,13 @@ var mountWave = (el, ctx) => {
     (e) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
+      if (x > geom.plotLeft + geom.plotWidth) {
+        if (geom.layout) {
+          view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+          markDirty();
+        }
+        return;
+      }
       if (!inPlot(x)) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {

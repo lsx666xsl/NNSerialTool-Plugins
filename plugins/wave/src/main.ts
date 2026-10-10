@@ -604,6 +604,14 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     (e: WheelEvent) => {
       e.preventDefault();
       const { x, y } = pointerPos(e);
+      // Y 轴刻度区（绘图区右侧）：滚轮=滚动通道列表（分栏溢出时），与外置滚动条/总览条同语义
+      if (x > geom.plotLeft + geom.plotWidth) {
+        if (geom.layout) {
+          view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+          markDirty();
+        }
+        return;
+      }
       if (!inPlot(x)) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       if (e.shiftKey) {
