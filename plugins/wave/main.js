@@ -303,9 +303,11 @@ var drawWave = (canvas, engine, view, colors) => {
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
   const fullT0 = engine.t.at(0);
+  const axisStep = niceStep(t1 - t0, 8);
   if (i1 - i0 < 2 || visIdx.length === 0) {
+    drawTimeGrid(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotTop, plotBottom, colors);
     drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
-    drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
+    drawTimeAxis(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
   let paneH;
@@ -328,6 +330,7 @@ var drawWave = (canvas, engine, view, colors) => {
     geom.layout = { trackH: viewportH, thumbH, scrollMax };
   }
   const px = (t) => plotLeft + (t - t0) / view.windowMs * plotW;
+  drawTimeGrid(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotTop, plotBottom, colors);
   for (const pane of panes) {
     if (pane.top + pane.height <= plotTop || pane.top >= plotBottom) continue;
     const auto = /* @__PURE__ */ new Map();
@@ -496,7 +499,7 @@ var drawWave = (canvas, engine, view, colors) => {
       }
     }
   }
-  drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
+  drawTimeAxis(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotBottom, colors);
   for (const c of [view.cursorA, view.cursorB]) {
     if (c === null || c < t0 || c > t1) continue;
     const x = px(c);
@@ -595,8 +598,34 @@ var drawEmpty = (g, x, y, w, h, colors) => {
   g.textBaseline = "middle";
   g.fillText("暂无数据 — 在上方选择已连接的会话开始采集", x + w / 2, y + h / 2);
 };
-var drawTimeAxis = (g, anchorT, t0, t1, plotLeft, plotW, plotBottom, colors) => {
-  const step = niceStep(t1 - t0, 8);
+var fmtAxisLabel = (ms, step) => {
+  if (step >= 6e4) return fmtDuration(ms);
+  if (step >= 1e3) return `${(ms / 1e3).toFixed(2)} s`;
+  const total = ms / 1e3;
+  const m = Math.floor(total / 60);
+  const rest = total - m * 60;
+  return m > 0 ? `${m}:${rest.toFixed(3).padStart(6, "0")}` : `${rest.toFixed(3)} s`;
+};
+var drawTimeGrid = (g, anchorT, t0, t1, step, plotLeft, plotW, plotTop, plotBottom, colors) => {
+  const mStep = step / 5;
+  const n0 = Math.ceil((t0 - anchorT) / mStep);
+  const n1 = Math.floor((t1 - anchorT) / mStep);
+  g.lineWidth = 1;
+  for (let n = n0; n <= n1; n++) {
+    const t = anchorT + n * mStep;
+    const x = plotLeft + (t - t0) / (t1 - t0) * plotW;
+    if (x < plotLeft - 0.5 || x > plotLeft + plotW + 0.5) continue;
+    const major = (n % 5 + 5) % 5 === 0;
+    g.globalAlpha = major ? 0.7 : 0.3;
+    g.strokeStyle = colors.grid;
+    g.beginPath();
+    g.moveTo(Math.round(x) + 0.5, plotTop);
+    g.lineTo(Math.round(x) + 0.5, plotBottom);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+};
+var drawTimeAxis = (g, anchorT, t0, t1, step, plotLeft, plotW, plotBottom, colors) => {
   g.fillStyle = colors.textDim;
   g.font = "10px Consolas, monospace";
   g.textAlign = "center";
@@ -606,7 +635,7 @@ var drawTimeAxis = (g, anchorT, t0, t1, plotLeft, plotW, plotBottom, colors) => 
   for (let t = firstGrid; t <= t1; t += step) {
     const x = plotLeft + (t - t0) / (t1 - t0) * plotW;
     if (x < plotLeft || x > plotLeft + plotW) continue;
-    g.fillText(fmtDuration(t - anchorT), x, plotBottom + 6);
+    g.fillText(fmtAxisLabel(t - anchorT, step), x, plotBottom + 6);
     g.beginPath();
     g.moveTo(Math.round(x) + 0.5, plotBottom);
     g.lineTo(Math.round(x) + 0.5, plotBottom + 4);

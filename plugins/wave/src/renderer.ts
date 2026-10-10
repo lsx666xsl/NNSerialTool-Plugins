@@ -184,10 +184,12 @@ export const drawWave = (
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
   const fullT0 = engine.t.at(0); // 时间轴锚点（数据起点）——刻度网格固定在绝对数据时间上
+  const axisStep = niceStep(t1 - t0, 8); // 主刻度步长（标签与网格共用，保证对齐）
 
   if (i1 - i0 < 2 || visIdx.length === 0) {
+    drawTimeGrid(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotTop, plotBottom, colors);
     drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
-    drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
+    drawTimeAxis(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
 
@@ -221,6 +223,9 @@ export const drawWave = (
   }
 
   const px = (t: number) => plotLeft + ((t - t0) / view.windowMs) * plotW;
+
+  // 时间网格画在数据层之下（全高主/次竖线）
+  drawTimeGrid(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotTop, plotBottom, colors);
 
   // ---------- 逐栏绘制 ----------
   for (const pane of panes) {
@@ -414,8 +419,8 @@ export const drawWave = (
     }
   }
 
-  // 时间轴（锚定数据起点的固定网格）
-  drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
+  // 时间轴标签（锚定数据起点的绝对时刻，主刻度）
+  drawTimeAxis(g, fullT0, t0, t1, axisStep, plotLeft, plotW, plotBottom, colors);
 
   // 游标
   for (const c of [view.cursorA, view.cursorB]) {
@@ -551,31 +556,72 @@ const drawEmpty = (g: CanvasRenderingContext2D, x: number, y: number, w: number,
   g.fillText('暂无数据 — 在上方选择已连接的会话开始采集', x + w / 2, y + h / 2);
 };
 
-// 时间轴：刻度网格锚定数据起点（anchorT），标签 = 距起点的经过时间。
-// 平移/缩放时刻度线固定在"绝对数据时间"上——同一波形点始终对准同一条刻度线，
-// 标签值不随窗口滚动重排（用户要求的固定时间轴）。
+// 时间轴标签自适应精度（示波器规律：相邻刻度标签必须可分辨）：
+// 步长 ≥1min → "7.91 min"；≥1s → "12.30 s"；亚秒 → "7.500 s" / "7:55.340"（毫秒位可分辨 20ms 步长）
+const fmtAxisLabel = (ms: number, step: number): string => {
+  if (step >= 60_000) return fmtDuration(ms);
+  if (step >= 1000) return `${(ms / 1000).toFixed(2)} s`;
+  const total = ms / 1000;
+  const m = Math.floor(total / 60);
+  const rest = total - m * 60;
+  return m > 0 ? `${m}:${rest.toFixed(3).padStart(6, '0')}` : `${rest.toFixed(3)} s`;
+};
+
+// 时间网格（画在数据层之下）：主刻度全高竖线 + 1/5 细分次刻度（示波器分度规律，
+// 放大后竖线随之变密变细）。刻度锚定数据起点的绝对时间，平移时线不动。
+const drawTimeGrid = (
+  g: CanvasRenderingContext2D,
+  anchorT: number,
+  t0: number,
+  t1: number,
+  step: number,
+  plotLeft: number,
+  plotW: number,
+  plotTop: number,
+  plotBottom: number,
+  colors: ThemeColors
+) => {
+  const mStep = step / 5;
+  const n0 = Math.ceil((t0 - anchorT) / mStep);
+  const n1 = Math.floor((t1 - anchorT) / mStep);
+  g.lineWidth = 1;
+  for (let n = n0; n <= n1; n++) {
+    const t = anchorT + n * mStep;
+    const x = plotLeft + ((t - t0) / (t1 - t0)) * plotW;
+    if (x < plotLeft - 0.5 || x > plotLeft + plotW + 0.5) continue;
+    const major = ((n % 5) + 5) % 5 === 0;
+    g.globalAlpha = major ? 0.7 : 0.3;
+    g.strokeStyle = colors.grid;
+    g.beginPath();
+    g.moveTo(Math.round(x) + 0.5, plotTop);
+    g.lineTo(Math.round(x) + 0.5, plotBottom);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+};
+
+// 时间轴标签与轴部 tick（主刻度）
 const drawTimeAxis = (
   g: CanvasRenderingContext2D,
   anchorT: number,
   t0: number,
   t1: number,
+  step: number,
   plotLeft: number,
   plotW: number,
   plotBottom: number,
   colors: ThemeColors
 ) => {
-  const step = niceStep(t1 - t0, 8);
   g.fillStyle = colors.textDim;
   g.font = '10px Consolas, monospace';
   g.textAlign = 'center';
   g.textBaseline = 'top';
   g.strokeStyle = colors.grid;
-  // 对齐 anchorT 整步长的网格（而非窗口左缘）：t = anchorT + k×step
   const firstGrid = anchorT + Math.ceil((t0 - anchorT) / step) * step;
   for (let t = firstGrid; t <= t1; t += step) {
     const x = plotLeft + ((t - t0) / (t1 - t0)) * plotW;
     if (x < plotLeft || x > plotLeft + plotW) continue;
-    g.fillText(fmtDuration(t - anchorT), x, plotBottom + 6);
+    g.fillText(fmtAxisLabel(t - anchorT, step), x, plotBottom + 6);
     g.beginPath();
     g.moveTo(Math.round(x) + 0.5, plotBottom);
     g.lineTo(Math.round(x) + 0.5, plotBottom + 4);
