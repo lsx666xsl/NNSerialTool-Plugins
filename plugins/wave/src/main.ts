@@ -73,8 +73,11 @@ const CSS = `
 .wavep-chip.off { opacity:.45; }
 .wavep-chip i { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
 .wavep-chip-name { font-size:12px; font-weight:600; color:#3b414b; }
-.wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums; }
-.wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; }
+/* 数值/增量固定最小宽度 + 等宽数字：值变化时 chip 不随数字长度抖动（长值可自然延展） */
+.wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
+  display:inline-block; min-width:7ch; text-align:right; }
+.wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
+  display:inline-block; min-width:7ch; text-align:right; }
 .theme-dark .wavep-chip { background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px rgba(255,255,255,.09); }
 .theme-dark .wavep-chip:hover { background:rgba(108,167,232,.14); }
 .theme-dark .wavep-chip-name { color:#d6d9de; }
@@ -808,8 +811,8 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     const pos = ovPointer(e);
     if (!pos || !ovRange) return;
     if (drag.kind === 'ov-pan') {
-      // 按住处时刻跟随光标：窗口平移量 = grabT - 光标时刻
-      ovSetWindow(drag.startRightT - (pos.t - drag.grabT), view.windowMs);
+      // 取景框跟手：光标右移（pos.t 增大）→ 窗口右移（rightT 增大）
+      ovSetWindow(drag.startRightT + (pos.t - drag.grabT), view.windowMs);
       if (view.follow) view.rightT = engine.lastT;
     } else if (drag.kind === 'ov-left') {
       const w = clamp(drag.anchorT - pos.t, MIN_WINDOW, MAX_WINDOW);
@@ -839,6 +842,13 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     'wheel',
     (e: WheelEvent) => {
       e.preventDefault();
+      // 分栏模式：滚轮直接滚动通道列表（用户要求——不在波形区时滚轮用于浏览通道）
+      if (geom.layout) {
+        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+        markDirty();
+        return;
+      }
+      // 叠加模式无通道可滚：保留光标锚定缩放
       const pos = ovPointer(e);
       if (!pos) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;

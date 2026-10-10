@@ -183,10 +183,11 @@ export const drawWave = (
 
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
+  const fullT0 = engine.t.at(0); // 时间轴锚点（数据起点）——刻度网格固定在绝对数据时间上
 
   if (i1 - i0 < 2 || visIdx.length === 0) {
     drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
-    drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
+    drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
 
@@ -413,8 +414,8 @@ export const drawWave = (
     }
   }
 
-  // 时间轴（相对窗口左端）
-  drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
+  // 时间轴（锚定数据起点的固定网格）
+  drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
 
   // 游标
   for (const c of [view.cursorA, view.cursorB]) {
@@ -550,8 +551,12 @@ const drawEmpty = (g: CanvasRenderingContext2D, x: number, y: number, w: number,
   g.fillText('暂无数据 — 在上方选择已连接的会话开始采集', x + w / 2, y + h / 2);
 };
 
+// 时间轴：刻度网格锚定数据起点（anchorT），标签 = 距起点的经过时间。
+// 平移/缩放时刻度线固定在"绝对数据时间"上——同一波形点始终对准同一条刻度线，
+// 标签值不随窗口滚动重排（用户要求的固定时间轴）。
 const drawTimeAxis = (
   g: CanvasRenderingContext2D,
+  anchorT: number,
   t0: number,
   t1: number,
   plotLeft: number,
@@ -565,10 +570,12 @@ const drawTimeAxis = (
   g.textAlign = 'center';
   g.textBaseline = 'top';
   g.strokeStyle = colors.grid;
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+  // 对齐 anchorT 整步长的网格（而非窗口左缘）：t = anchorT + k×step
+  const firstGrid = anchorT + Math.ceil((t0 - anchorT) / step) * step;
+  for (let t = firstGrid; t <= t1; t += step) {
     const x = plotLeft + ((t - t0) / (t1 - t0)) * plotW;
     if (x < plotLeft || x > plotLeft + plotW) continue;
-    g.fillText(fmtDuration(t - t0), x, plotBottom + 6);
+    g.fillText(fmtDuration(t - anchorT), x, plotBottom + 6);
     g.beginPath();
     g.moveTo(Math.round(x) + 0.5, plotBottom);
     g.lineTo(Math.round(x) + 0.5, plotBottom + 4);

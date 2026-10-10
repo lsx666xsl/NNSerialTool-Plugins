@@ -302,9 +302,10 @@ var drawWave = (canvas, engine, view, colors) => {
   };
   const i0 = engine.lowerBound(t0);
   const i1 = engine.t.count;
+  const fullT0 = engine.t.at(0);
   if (i1 - i0 < 2 || visIdx.length === 0) {
     drawEmpty(g, plotLeft, plotTop, plotW, viewportH, colors);
-    drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
+    drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
     return geom;
   }
   let paneH;
@@ -495,7 +496,7 @@ var drawWave = (canvas, engine, view, colors) => {
       }
     }
   }
-  drawTimeAxis(g, t0, t1, plotLeft, plotW, plotBottom, colors);
+  drawTimeAxis(g, fullT0, t0, t1, plotLeft, plotW, plotBottom, colors);
   for (const c of [view.cursorA, view.cursorB]) {
     if (c === null || c < t0 || c > t1) continue;
     const x = px(c);
@@ -594,17 +595,18 @@ var drawEmpty = (g, x, y, w, h, colors) => {
   g.textBaseline = "middle";
   g.fillText("暂无数据 — 在上方选择已连接的会话开始采集", x + w / 2, y + h / 2);
 };
-var drawTimeAxis = (g, t0, t1, plotLeft, plotW, plotBottom, colors) => {
+var drawTimeAxis = (g, anchorT, t0, t1, plotLeft, plotW, plotBottom, colors) => {
   const step = niceStep(t1 - t0, 8);
   g.fillStyle = colors.textDim;
   g.font = "10px Consolas, monospace";
   g.textAlign = "center";
   g.textBaseline = "top";
   g.strokeStyle = colors.grid;
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+  const firstGrid = anchorT + Math.ceil((t0 - anchorT) / step) * step;
+  for (let t = firstGrid; t <= t1; t += step) {
     const x = plotLeft + (t - t0) / (t1 - t0) * plotW;
     if (x < plotLeft || x > plotLeft + plotW) continue;
-    g.fillText(fmtDuration(t - t0), x, plotBottom + 6);
+    g.fillText(fmtDuration(t - anchorT), x, plotBottom + 6);
     g.beginPath();
     g.moveTo(Math.round(x) + 0.5, plotBottom);
     g.lineTo(Math.round(x) + 0.5, plotBottom + 4);
@@ -1304,8 +1306,11 @@ var CSS = `
 .wavep-chip.off { opacity:.45; }
 .wavep-chip i { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
 .wavep-chip-name { font-size:12px; font-weight:600; color:#3b414b; }
-.wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums; }
-.wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; }
+/* 数值/增量固定最小宽度 + 等宽数字：值变化时 chip 不随数字长度抖动（长值可自然延展） */
+.wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
+  display:inline-block; min-width:7ch; text-align:right; }
+.wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
+  display:inline-block; min-width:7ch; text-align:right; }
 .theme-dark .wavep-chip { background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px rgba(255,255,255,.09); }
 .theme-dark .wavep-chip:hover { background:rgba(108,167,232,.14); }
 .theme-dark .wavep-chip-name { color:#d6d9de; }
@@ -1940,7 +1945,7 @@ var mountWave = (el, ctx) => {
     const pos = ovPointer(e);
     if (!pos || !ovRange) return;
     if (drag.kind === "ov-pan") {
-      ovSetWindow(drag.startRightT - (pos.t - drag.grabT), view.windowMs);
+      ovSetWindow(drag.startRightT + (pos.t - drag.grabT), view.windowMs);
       if (view.follow) view.rightT = engine.lastT;
     } else if (drag.kind === "ov-left") {
       const w = clamp(drag.anchorT - pos.t, MIN_WINDOW, MAX_WINDOW);
@@ -1970,6 +1975,11 @@ var mountWave = (el, ctx) => {
     "wheel",
     (e) => {
       e.preventDefault();
+      if (geom.layout) {
+        view.paneScroll = clamp(view.paneScroll + e.deltaY, 0, geom.layout.scrollMax);
+        markDirty();
+        return;
+      }
       const pos = ovPointer(e);
       if (!pos) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
