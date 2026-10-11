@@ -242,6 +242,7 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
     paletteCleanup?.();
     paletteCleanup = null;
     paletteOpenIndex = -1;
+    persist(); // 弹层期间的取色改动一并落盘（拖色后直接点 × 的路径不含 persist）
   };
 
   const openPalette = (index: number, anchorEl: HTMLElement) => {
