@@ -995,7 +995,15 @@ const mountWave = (el: HTMLElement, ctx: PluginContext): (() => void) => {
   unsubs.push(
     ctx.onThemeChange((t) => {
       lastTheme = null; // 强制下帧重绘（颜色变化）
+      ovStripAt = 0; // 总览条缩影按新主题色立即重算
       void t;
+      // 调色弹层按打开时的主题着色，主题切换瞬间重挂新主题样式
+      if (paletteOpenIndex >= 0 && paletteCleanup) {
+        const idx = paletteOpenIndex;
+        const anchor = document.querySelector(`.wavep-chip[data-index="${idx}"] .wavep-dot`) as HTMLElement | null;
+        closePalette();
+        if (anchor) openPalette(idx, anchor);
+      }
       markDirty();
     })
   );

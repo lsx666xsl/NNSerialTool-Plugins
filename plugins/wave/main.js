@@ -2134,7 +2134,14 @@ var mountWave = (el, ctx) => {
   unsubs.push(
     ctx.onThemeChange((t) => {
       lastTheme = null;
+      ovStripAt = 0;
       void t;
+      if (paletteOpenIndex >= 0 && paletteCleanup) {
+        const idx = paletteOpenIndex;
+        const anchor = document.querySelector(`.wavep-chip[data-index="${idx}"] .wavep-dot`);
+        closePalette();
+        if (anchor) openPalette(idx, anchor);
+      }
       markDirty();
     })
   );
