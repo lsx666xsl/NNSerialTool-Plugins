@@ -1487,6 +1487,7 @@ var mountWave = (el, ctx) => {
     paletteCleanup?.();
     paletteCleanup = null;
     paletteOpenIndex = -1;
+    persist();
   };
   const openPalette = (index, anchorEl) => {
     if (paletteOpenIndex === index && paletteCleanup) {
