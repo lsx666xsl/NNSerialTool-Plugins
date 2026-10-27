@@ -1,6 +1,6 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-10-10T16:02:36.487Z",
+  "updatedAt": "2026-10-27T00:48:23.390Z",
   "plugins": [
     {
       "id": "hello-view",
@@ -12,20 +12,20 @@
       "apiVersion": 1,
       "size": 1476,
       "sha256": "c299bee4620492fb0800236b06e720dc6b69b9bc25e006a4c3c1c0a8600cf9ee",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@084938d1b82125d7644d354c17ef86a375409d93/packages/hello-view-1.0.0.zip"
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/hello-view-1.0.0.zip"
     },
     {
       "id": "wave",
       "name": "波形",
-      "version": "1.16.0",
+      "version": "1.16.1",
       "type": "view",
       "description": "串口/网络数据的实时波形显示（NN-Wave 协议，最多 64 通道）",
       "author": "NNSerialTool",
       "apiVersion": 1,
       "minAppVersion": "0.5.2",
-      "size": 25858,
-      "sha256": "2ded3ce4c7f48226b23a53a7469879e4f238850064cdc43fc1d51836c59adc7f",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@084938d1b82125d7644d354c17ef86a375409d93/packages/wave-1.16.0.zip"
+      "size": 26066,
+      "sha256": "b4e711fb2c183bdcbabe9bd4f5004dc61d7108a64791d762cb39af2824a339df",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@main/packages/wave-1.16.1.zip"
     }
   ]
 }

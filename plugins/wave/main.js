@@ -1324,22 +1324,27 @@ var CSS = `
 .wavep-ovcanvas { display:block; width:100%; height:30px; flex-shrink:0; cursor:grab; }
 .wavep-ovcanvas:active { cursor:grabbing; }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
-.wavep-legend { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; align-content:flex-start;
+.wavep-legend { --wavep-chip-w:155px; display:grid; grid-template-columns:repeat(auto-fill, var(--wavep-chip-w));
+  grid-auto-rows:26px; gap:6px; justify-content:start; align-content:flex-start; min-height:26px;
   max-height:136px; overflow-y:auto; scrollbar-width:thin;
   scrollbar-color:rgba(128,132,140,.45) transparent; }
 .wavep-legend::-webkit-scrollbar { width:8px; }
 .wavep-legend::-webkit-scrollbar-thumb { background:rgba(128,132,140,.45); border-radius:4px; }
-.wavep-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
+.wavep-chip { display:flex; align-items:center; gap:6px; width:var(--wavep-chip-w); height:26px; box-sizing:border-box;
+  padding:3px 10px; border-radius:999px; overflow:hidden;
   background:rgba(23,26,33,.04); box-shadow:inset 0 0 0 1px rgba(23,26,33,.08); cursor:pointer; user-select:none; }
 .wavep-chip:hover { background:rgba(59,111,212,.08); }
 .wavep-chip.off { opacity:.45; }
 .wavep-chip i { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
-.wavep-chip-name { font-size:12px; font-weight:600; color:#3b414b; }
+.wavep-chip-name { font-size:12px; font-weight:600; color:#3b414b; flex:1; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* 数值/增量固定最小宽度 + 等宽数字：值变化时 chip 不随数字长度抖动（长值可自然延展） */
 .wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
-  display:inline-block; min-width:7ch; text-align:right; }
+  display:inline-block; min-width:6ch; flex-shrink:0; text-align:right; }
 .wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
-  display:inline-block; min-width:7ch; text-align:right; }
+  display:inline-block; min-width:6ch; flex-shrink:0; text-align:right; }
+/* 没有游标差值时不占 6ch，固定宽度下把空间让给通道名 */
+.wavep-chip-delta:empty { display:none; }
 .theme-dark .wavep-chip { background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px rgba(255,255,255,.09); }
 .theme-dark .wavep-chip:hover { background:rgba(108,167,232,.14); }
 .theme-dark .wavep-chip-name { color:#d6d9de; }
