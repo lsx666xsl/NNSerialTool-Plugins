@@ -1,7 +1,20 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-10-27T00:48:57.211Z",
+  "updatedAt": "2026-11-19T01:59:50.222Z",
   "plugins": [
+    {
+      "id": "av-inspect",
+      "name": "音视频解析",
+      "version": "1.2.0",
+      "type": "view",
+      "description": "音视频码流分析：H.264/H.265 Annex-B、MJPEG、ADTS AAC、MPEG-TS、WAV；A/V 时间线 + 帧大小曲线 + 时长/码率/GOP/片类型/SEI/量化表概览",
+      "author": "NNSerialTool",
+      "apiVersion": 1,
+      "minAppVersion": "0.6.0",
+      "size": 20480,
+      "sha256": "f85f3922378789b819a81e8f66a67dc392665850a8af25ca8304179bac2eda0a",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/av-inspect-1.2.0.zip"
+    },
     {
       "id": "hello-view",
       "name": "Hello 示例视图",
@@ -11,21 +24,21 @@
       "author": "NNSerialTool",
       "apiVersion": 1,
       "size": 1476,
-      "sha256": "c299bee4620492fb0800236b06e720dc6b69b9bc25e006a4c3c1c0a8600cf9ee",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@18eee818b63e8e3ac7db13767463ca3434f62068/packages/hello-view-1.0.0.zip"
+      "sha256": "cf6d5852ec5dfe533d70b04ede68af62cf83bc860d040f33600b69b413f2ce15",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/hello-view-1.0.0.zip"
     },
     {
       "id": "wave",
       "name": "波形",
-      "version": "1.16.1",
+      "version": "1.18.0",
       "type": "view",
       "description": "串口/网络数据的实时波形显示（NN-Wave 协议，最多 64 通道）",
       "author": "NNSerialTool",
       "apiVersion": 1,
       "minAppVersion": "0.5.2",
-      "size": 26066,
-      "sha256": "b4e711fb2c183bdcbabe9bd4f5004dc61d7108a64791d762cb39af2824a339df",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@18eee818b63e8e3ac7db13767463ca3434f62068/packages/wave-1.16.1.zip"
+      "size": 34670,
+      "sha256": "e1c53edc004ba796e3c4ec0fa74832d04f7c355aaa457f0274140d179866b723",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/wave-1.18.0.zip"
     }
   ]
 }
