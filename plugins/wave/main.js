@@ -207,7 +207,9 @@ var defaultViewState = () => ({
   yRanges: /* @__PURE__ */ new Map(),
   cursorA: null,
   cursorB: null,
-  paneScroll: 0
+  paneScroll: 0,
+  hoverCh: null,
+  hoverT: null
 });
 var MIN_WINDOW = 100;
 var MAX_WINDOW = 30 * 6e4;
@@ -384,7 +386,24 @@ var drawWave = (canvas, engine, view, colors) => {
     g.rect(plotLeft, plotTop, plotW, viewportH);
     g.clip();
     const cols = Math.max(1, Math.floor(plotW));
-    for (const ch of channels) {
+    if (view.hoverCh !== null && !view.overlay && pane.ch === view.hoverCh) {
+      const hc = colors.palette[pane.ch % colors.palette.length];
+      const top = Math.max(plotTop, pane.top);
+      const h = Math.max(0, Math.min(pane.height, plotBottom - pane.top) - (top - pane.top));
+      g.save();
+      g.globalAlpha = 0.08;
+      g.fillStyle = hc;
+      g.fillRect(plotLeft, top, plotW, h);
+      g.globalAlpha = 0.9;
+      g.fillRect(plotLeft, top + 2, 3, Math.max(0, h - 4));
+      g.restore();
+    }
+    const hover = view.hoverCh;
+    const drawOrder = hover !== null && channels.includes(hover) ? [...channels.filter((c) => c !== hover), hover] : channels;
+    for (const ch of drawOrder) {
+      const dimmed = hover !== null && ch !== hover;
+      const emphasized = hover !== null && ch === hover;
+      g.globalAlpha = dimmed ? 0.22 : 1;
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v) => pane.top + pane.height - (v - range.min) / (range.max - range.min) * pane.height;
       const color = colors.palette[ch % colors.palette.length];
@@ -406,7 +425,7 @@ var drawWave = (canvas, engine, view, colors) => {
         }
         g.beginPath();
         g.strokeStyle = color;
-        g.lineWidth = 1.25;
+        g.lineWidth = emphasized ? 2 : 1.25;
         let started = false;
         let lastX = -1;
         for (let col = 0; col < cols; col++) {
@@ -428,19 +447,22 @@ var drawWave = (canvas, engine, view, colors) => {
       } else if (view.style === "dots") {
         g.fillStyle = color;
         const total = i1 - i0;
-        const stride = total > 8e3 ? Math.ceil(total / 8e3) : 1;
+        const dotBudget = Math.max(300, Math.floor(8e3 / Math.max(1, channels.length)));
+        const stride = total > dotBudget ? Math.ceil(total / dotBudget) : 1;
         for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
           const x = plotLeft + (t - t0) / view.windowMs * plotW;
           const y = yOf(engine.channels[ch].at(i));
-          g.fillRect(x - 1.5, y - 1.5, 3, 3);
+          const half = emphasized ? 2 : 1.5;
+          g.fillRect(x - half, y - half, half * 2, half * 2);
         }
       } else {
         g.strokeStyle = color;
-        g.lineWidth = 1.6;
+        g.lineWidth = emphasized ? 2.6 : 1.6;
         const total = i1 - i0;
-        const stride = total > 2e4 ? Math.ceil(total / 2e4) : 1;
+        const lineBudget = Math.max(300, Math.floor(2e4 / Math.max(1, channels.length)));
+        const stride = total > lineBudget ? Math.ceil(total / lineBudget) : 1;
         const pts = [];
         for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
@@ -464,6 +486,7 @@ var drawWave = (canvas, engine, view, colors) => {
         g.stroke();
       }
     }
+    g.globalAlpha = 1;
     if (!view.overlay) {
       g.fillStyle = colors.text;
       g.font = "600 11px sans-serif";
@@ -510,6 +533,40 @@ var drawWave = (canvas, engine, view, colors) => {
     g.lineTo(x + 0.5, plotBottom);
     g.stroke();
     g.setLineDash([]);
+  }
+  if (view.hoverT !== null && view.hoverT >= t0 && view.hoverT <= t1) {
+    const x = px(view.hoverT);
+    g.save();
+    g.globalAlpha = 0.5;
+    g.strokeStyle = colors.textDim;
+    g.setLineDash([2, 3]);
+    g.beginPath();
+    g.moveTo(x + 0.5, plotTop);
+    g.lineTo(x + 0.5, plotBottom);
+    g.stroke();
+    g.restore();
+  }
+  if (view.cursorA !== null && view.cursorB !== null) {
+    const dt = Math.abs(view.cursorB - view.cursorA);
+    if (dt > 0) {
+      const hz = 1e3 / dt;
+      const hzText = hz >= 100 ? hz.toFixed(0) : hz >= 1 ? hz.toFixed(1) : hz.toFixed(2);
+      const label = `Δt ${fmtDuration(dt)} · ${hzText} Hz`;
+      g.save();
+      g.font = "600 11px Consolas, monospace";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      const w = g.measureText(label).width + 14;
+      g.globalAlpha = 0.92;
+      g.fillStyle = colors.panel;
+      g.fillRect(plotLeft + 4, plotTop + 4, w, 18);
+      g.globalAlpha = 1;
+      g.strokeStyle = colors.accent;
+      g.strokeRect(plotLeft + 4.5, plotTop + 4.5, w - 1, 17);
+      g.fillStyle = colors.accent;
+      g.fillText(label, plotLeft + 11, plotTop + 13);
+      g.restore();
+    }
   }
   return geom;
 };
@@ -1285,6 +1342,166 @@ function fixedPxUnit() {
   return zoomAffectsFixed ? zoom : 1;
 }
 
+// plugins/wave/src/analysis.ts
+var EMPTY_STATS = { min: NaN, max: NaN, vpp: NaN, mean: NaN, rms: NaN, freq: null, count: 0 };
+var channelStats = (engine, ch, i0, i1) => {
+  const n = i1 - i0;
+  const ring = engine.channels[ch];
+  if (!ring || n <= 1) return EMPTY_STATS;
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  for (let i = i0; i < i1; i++) {
+    const v = ring.at(i);
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return EMPTY_STATS;
+  const mean = sum / n;
+  let sq = 0;
+  for (let i = i0; i < i1; i++) {
+    const v = ring.at(i);
+    if (!Number.isFinite(v)) continue;
+    const d = v - mean;
+    sq += d * d;
+  }
+  const rms = Math.sqrt(sq / n);
+  let crossings = 0;
+  let prev = 0;
+  let started = false;
+  for (let i = i0; i < i1; i++) {
+    const v = ring.at(i) - mean;
+    if (!Number.isFinite(v)) continue;
+    const s = v >= 0 ? 1 : -1;
+    if (!started) {
+      started = true;
+      prev = s;
+      continue;
+    }
+    if (s !== prev) {
+      crossings += 1;
+      prev = s;
+    }
+  }
+  const span = engine.t.at(i1 - 1) - engine.t.at(i0);
+  const freq = span > 0 && crossings >= 2 ? crossings / 2 / (span / 1e3) : null;
+  return { min, max, vpp: max - min, mean, rms, freq, count: n };
+};
+var buildCsv = (engine, names, cols, i0, i1, maxRows = 2e5) => {
+  const n = Math.min(i1 - i0, maxRows);
+  if (n <= 0 || cols.length === 0) return "";
+  const t0 = engine.t.at(i0);
+  const head = ["time_s", ...cols.map((c) => `"${(names[c] ?? `CH${c + 1}`).replace(/"/g, '""')}"`)].join(",");
+  const lines = [head];
+  for (let i = 0; i < n; i++) {
+    const idx = i0 + i;
+    const ts = ((engine.t.at(idx) - t0) / 1e3).toFixed(6);
+    const row = [ts];
+    for (const c of cols) {
+      const v = engine.channels[c].at(idx);
+      row.push(Number.isFinite(v) ? String(+v.toFixed(6)) : "");
+    }
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+};
+var fftSpectrum = (engine, ch, i0, i1) => {
+  const ring = engine.channels[ch];
+  const n = i1 - i0;
+  if (!ring || n < 16) return null;
+  const span = engine.t.at(i1 - 1) - engine.t.at(i0);
+  if (!(span > 0)) return null;
+  const meanDt = span / (n - 1);
+  const sampleHz = 1e3 / meanDt;
+  let nfft = 1;
+  while (nfft * 2 <= Math.min(n, 8192)) nfft *= 2;
+  if (nfft < 16) return null;
+  const re = new Float64Array(nfft);
+  const im = new Float64Array(nfft);
+  const tStart = engine.t.at(i0);
+  const tEnd = engine.t.at(i1 - 1);
+  const dtGrid = (tEnd - tStart) / (nfft - 1);
+  const grid = new Float64Array(nfft);
+  let cur = i0;
+  for (let k = 0; k < nfft; k++) {
+    const tk = tStart + k * dtGrid;
+    while (cur + 1 < i1 - 1 && engine.t.at(cur + 1) <= tk) cur++;
+    const ta = engine.t.at(cur);
+    const tb = engine.t.at(Math.min(cur + 1, i1 - 1));
+    const va = ring.at(cur);
+    const vb = ring.at(Math.min(cur + 1, i1 - 1));
+    const w = tb > ta ? Math.min(1, Math.max(0, (tk - ta) / (tb - ta))) : 0;
+    grid[k] = va + (vb - va) * w;
+  }
+  let mean = 0;
+  for (let k = 0; k < nfft; k++) mean += grid[k];
+  mean /= nfft;
+  let winSum = 0;
+  for (let k = 0; k < nfft; k++) {
+    const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * k / (nfft - 1));
+    winSum += w;
+    re[k] = (grid[k] - mean) * w;
+  }
+  const winGain = winSum / nfft;
+  for (let i = 1, j = 0; i < nfft; i++) {
+    let bit = nfft >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= nfft; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    for (let i = 0; i < nfft; i += len) {
+      for (let k = 0; k < len / 2; k++) {
+        const wr = Math.cos(ang * k);
+        const wi = Math.sin(ang * k);
+        const ur = re[i + k];
+        const ui = im[i + k];
+        const vr = re[i + k + len / 2] * wr - im[i + k + len / 2] * wi;
+        const vi = re[i + k + len / 2] * wi + im[i + k + len / 2] * wr;
+        re[i + k] = ur + vr;
+        im[i + k] = ui + vi;
+        re[i + k + len / 2] = ur - vr;
+        im[i + k + len / 2] = ui - vi;
+      }
+    }
+  }
+  const half = nfft / 2;
+  const fsEff = (nfft - 1) / (span / 1e3);
+  const freqs = new Float32Array(half);
+  const mags = new Float32Array(half);
+  for (let k = 0; k < half; k++) {
+    freqs[k] = k * fsEff / nfft;
+    mags[k] = 2 * Math.hypot(re[k], im[k]) / (nfft * winGain);
+  }
+  return { freqs, mags, sampleHz, fsEff, nfft };
+};
+var movingAverage = (values, n) => {
+  const k = Math.max(1, Math.round(n));
+  if (k <= 1) return values.slice();
+  const out = new Float32Array(values.length);
+  let acc = 0;
+  for (let i = 0; i < values.length; i++) {
+    acc += values[i];
+    if (i >= k) acc -= values[i - k];
+    out[i] = acc / Math.min(i + 1, k);
+  }
+  return out;
+};
+var sliceChannel = (engine, ch, i0, i1) => {
+  const n = Math.max(0, i1 - i0);
+  const out = new Float32Array(n);
+  const ring = engine.channels[ch];
+  if (!ring) return out;
+  for (let i = 0; i < n; i++) out[i] = ring.at(i0 + i);
+  return out;
+};
+
 // plugins/wave/src/main.ts
 var STYLE_ID = "nnwave-plugin-style";
 var CSS = `
@@ -1295,7 +1512,15 @@ var CSS = `
 .wavep-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .wavep-label { font-size:12px; color:#8a9099; white-space:nowrap; }
 .theme-dark .wavep-label { color:#7c828c; }
-.wavep-select { max-width:220px; font-size:12px; padding:5px 8px; }
+/* 数据源下拉是原生 <select>：必须显式配色，否则深色主题下会露出浏览器的白底白框；
+   color-scheme 决定下拉展开列表（popup）的配色，只在 WebView2/Chromium 生效，其它内核忽略也无害。 */
+.wavep-select { max-width:220px; font-size:12px; padding:5px 8px; border-radius:6px; cursor:pointer;
+  background:rgba(23,26,33,.05); color:#3b414b; border:none; color-scheme:light;
+  box-shadow:inset 0 0 0 1px rgba(23,26,33,.12); }
+.wavep-select:hover { background:rgba(59,111,212,.1); color:#3563c2; }
+.theme-dark .wavep-select { background:rgba(255,255,255,.06); color:#d6d9de; color-scheme:dark;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.1); }
+.theme-dark .wavep-select:hover { background:rgba(108,167,232,.16); color:#8fbdf7; }
 .wavep-btn { padding:5px 12px; font-size:12px; border-radius:6px; cursor:pointer;
   background:rgba(23,26,33,.05); color:#4b5563; box-shadow:inset 0 0 0 1px rgba(23,26,33,.1);
   border:none; white-space:nowrap; }
@@ -1306,15 +1531,24 @@ var CSS = `
 .theme-dark .wavep-btn:hover { background:rgba(108,167,232,.14); color:#8fbdf7; }
 .theme-dark .wavep-btn.active { background:rgba(108,167,232,.2); color:#8fbdf7; }
 .theme-dark .wavep-btn.follow { background:rgba(107,201,126,.16); color:#6bc97e; }
-.wavep-export { margin-left:auto; }
-/* 波形主体：画布 + 画布外纵向通道滚动条（DOM，可拖/点跳/滚轮） */
-.wavep-main { display:flex; gap:4px; flex:1; min-height:200px; }
+.wavep-menuwrap { position:relative; margin-left:auto; }
+.wavep-menu { position:absolute; right:0; top:calc(100% + 4px); z-index:6; min-width:150px; padding:4px; border-radius:8px;
+  display:flex; flex-direction:column; gap:2px; background:rgba(255,255,255,.98);
+  box-shadow:0 6px 18px rgba(0,0,0,.2), inset 0 0 0 1px rgba(23,26,33,.12); }
+.theme-dark .wavep-menu { background:rgba(42,44,48,.98); box-shadow:0 6px 18px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.12); }
+.wavep-menu-item { text-align:left; border:none; background:transparent; color:inherit; cursor:pointer;
+  font-size:12px; padding:6px 8px; border-radius:5px; white-space:nowrap; }
+.wavep-menu-item:hover { background:rgba(59,111,212,.12); color:#3563c2; }
+.theme-dark .wavep-menu-item:hover { background:rgba(108,167,232,.18); color:#8fbdf7; }
+/* 波形主体：画布 + 画布内浮层纵向通道滚动条（DOM，可拖/点跳/滚轮） */
+.wavep-main { display:flex; flex:1; min-height:200px; }
 .wavep-wrap { flex:1; min-width:0; position:relative;
   border:1px solid rgba(23,26,33,.1); border-radius:6px; overflow:hidden; }
 .theme-dark .wavep-wrap { border-color:rgba(255,255,255,.09); }
-.wavep-vscroll { width:10px; position:relative; border-radius:5px; cursor:pointer;
-  background:rgba(23,26,33,.06); }
-.wavep-vthumb { position:absolute; left:1px; width:8px; min-height:24px; border-radius:4px;
+/* 滚动条改为画布内浮层：不再占横向空间，下面的总览条/通道区/状态栏就能与画布左右边缘严格对齐 */
+.wavep-vscroll { position:absolute; right:3px; top:3px; bottom:3px; width:8px; z-index:3;
+  border-radius:4px; cursor:pointer; background:rgba(23,26,33,.06); }
+.wavep-vthumb { position:absolute; left:0; width:8px; min-height:24px; border-radius:4px;
   background:rgba(128,132,140,.55); }
 .wavep-vthumb:hover, .wavep-vthumb.dragging { background:rgba(59,111,212,.65); }
 .theme-dark .wavep-vscroll { background:rgba(255,255,255,.06); }
@@ -1324,27 +1558,84 @@ var CSS = `
 .wavep-ovcanvas { display:block; width:100%; height:30px; flex-shrink:0; cursor:grab; }
 .wavep-ovcanvas:active { cursor:grabbing; }
 .wavep-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; }
-.wavep-legend { --wavep-chip-w:155px; display:grid; grid-template-columns:repeat(auto-fill, var(--wavep-chip-w));
-  grid-auto-rows:26px; gap:6px; justify-content:start; align-content:flex-start; min-height:26px;
-  max-height:136px; overflow-y:auto; scrollbar-width:thin;
+/* 鼠标读数 HUD：贴着光标显示时间与各通道数值（示波器“光标读数”的等价物） */
+.wavep-hud { position:absolute; z-index:4; min-width:120px; max-width:240px; padding:6px 8px; border-radius:6px;
+  font:11px/1.45 Consolas, monospace; pointer-events:none; color:#3b414b;
+  background:rgba(255,255,255,.92); box-shadow:0 2px 10px rgba(0,0,0,.18), inset 0 0 0 1px rgba(23,26,33,.12); }
+.theme-dark .wavep-hud { color:#d6d9de; background:rgba(38,40,44,.94); box-shadow:0 2px 10px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.12); }
+.wavep-hud-time { font-weight:700; margin-bottom:2px; }
+.wavep-hud-el { font-weight:400; color:#8a9099; margin-left:6px; }
+.theme-dark .wavep-hud-el { color:#7c828c; }
+.wavep-hud-dt { color:#3563c2; margin-bottom:3px; }
+.theme-dark .wavep-hud-dt { color:#8fbdf7; }
+.wavep-hud-row { display:flex; gap:8px; justify-content:space-between; }
+.wavep-hud-row b { font-weight:600; }
+.wavep-hud-row span:last-child { font-variant-numeric:tabular-nums; }
+/* 测量 / 数学面板：画布内浮层 */
+.wavep-measure, .wavep-math { position:absolute; z-index:5; right:6px; top:6px; width:260px; border-radius:8px;
+  background:rgba(255,255,255,.95); box-shadow:0 4px 16px rgba(0,0,0,.2), inset 0 0 0 1px rgba(23,26,33,.12);
+  font-size:11px; color:#3b414b; display:flex; flex-direction:column; }
+.wavep-math { top:auto; bottom:6px; }
+.theme-dark .wavep-measure, .theme-dark .wavep-math { background:rgba(38,40,44,.96); color:#d6d9de; box-shadow:0 4px 16px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.12); }
+.wavep-panel-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 8px;
+  font-weight:600; border-bottom:1px solid rgba(23,26,33,.08); }
+.theme-dark .wavep-panel-head { border-color:rgba(255,255,255,.1); }
+.wavep-panel-close { border:none; background:transparent; color:inherit; cursor:pointer; font-size:12px; opacity:.7; }
+.wavep-panel-close:hover { opacity:1; }
+.wavep-measure-body { padding:4px 8px 6px; overflow-y:auto; max-height:132px;
+  scrollbar-width:thin; scrollbar-color:rgba(128,132,140,.45) transparent; }
+.wavep-measure-body::-webkit-scrollbar { width:8px; }
+.wavep-measure-body::-webkit-scrollbar-thumb { background:rgba(128,132,140,.45); border-radius:4px; }
+.wavep-measure-body::-webkit-scrollbar-track { background:transparent; }
+.wavep-measure-row { display:grid; grid-template-columns:44px repeat(4, 1fr); gap:2px 6px; padding:2px 0;
+  font-variant-numeric:tabular-nums; }
+.wavep-measure-row.head { color:#8a9099; font-weight:600; }
+.wavep-math-bar { display:flex; flex-wrap:wrap; gap:4px; padding:5px 8px; align-items:center; }
+.wavep-math-bar .wavep-select { max-width:100%; font-size:11px; padding:3px 6px; }
+.wavep-math-n { display:flex; align-items:center; gap:4px; }
+.wavep-math-num { width:52px; font-size:11px; padding:3px 4px; border-radius:4px; border:none;
+  background:rgba(23,26,33,.06); color:inherit; }
+.theme-dark .wavep-math-num { background:rgba(255,255,255,.08); }
+.wavep-math-canvas { display:block; width:100%; height:96px; }
+.wavep-math-foot { padding:3px 8px 6px; color:#8a9099; font-variant-numeric:tabular-nums; }
+.wavep-legend { --wavep-chip-w:156px; display:grid; grid-template-columns:repeat(auto-fill, minmax(var(--wavep-chip-w), 1fr));
+  grid-auto-rows:40px; gap:6px; justify-content:stretch; align-content:flex-start; min-height:26px;
+  max-height:136px; overflow-y:auto; scrollbar-width:thin; scrollbar-gutter:stable;
   scrollbar-color:rgba(128,132,140,.45) transparent; }
 .wavep-legend::-webkit-scrollbar { width:8px; }
 .wavep-legend::-webkit-scrollbar-thumb { background:rgba(128,132,140,.45); border-radius:4px; }
-.wavep-chip { display:flex; align-items:center; gap:6px; width:var(--wavep-chip-w); height:26px; box-sizing:border-box;
-  padding:3px 10px; border-radius:999px; overflow:hidden;
+/* 通道卡片：默认两行（上行名、下行值），通道多时由 .dense 压回单行紧凑布局 */
+.wavep-chip { display:flex; flex-direction:column; align-items:stretch; justify-content:center; gap:2px;
+  width:100%; height:40px; box-sizing:border-box;
+  padding:3px 10px; border-radius:9px; overflow:hidden;
   background:rgba(23,26,33,.04); box-shadow:inset 0 0 0 1px rgba(23,26,33,.08); cursor:pointer; user-select:none; }
+.wavep-chip-top { display:flex; align-items:center; gap:6px; min-width:0; }
+.wavep-chip-bottom { display:flex; align-items:baseline; justify-content:flex-end; gap:6px; }
+/* 通道多（>12）时压回单行：一屏能看到更多通道 */
+.wavep-legend.dense { grid-auto-rows:26px; }
+.wavep-legend.dense .wavep-chip { flex-direction:row; align-items:center; height:26px; gap:5px; border-radius:999px; padding:3px 8px; }
+.wavep-legend.dense .wavep-chip-top { flex:1; }
+.wavep-legend.dense .wavep-chip-bottom { flex:none; gap:5px; }
 .wavep-chip:hover { background:rgba(59,111,212,.08); }
+/* 悬停高亮：被指的通道描边强调，其余通道淡出，和画布里的曲线高亮对应 */
+.wavep-chip.hot { background:rgba(59,111,212,.12); box-shadow:inset 0 0 0 1.5px rgba(59,111,212,.55); }
+.wavep-legend.hovering .wavep-chip:not(.hot) { opacity:.5; }
+.theme-dark .wavep-chip.hot { background:rgba(108,167,232,.18); box-shadow:inset 0 0 0 1.5px rgba(108,167,232,.6); }
 .wavep-chip.off { opacity:.45; }
 .wavep-chip i { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
 .wavep-chip-name { font-size:12px; font-weight:600; color:#3b414b; flex:1; min-width:0;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* 数值/增量固定最小宽度 + 等宽数字：值变化时 chip 不随数字长度抖动（长值可自然延展） */
+/* 数值/增量都用**固定宽度**的右对齐列：
+   数值列右边缘 = 增量列左边缘，增量列宽度恒定 ⇒ 所有 chip 的数值右边缘完全对齐，
+   数字长度变化、Δ 有无（NaN 通道）都不会让数值列左右跳动。 */
 .wavep-chip-val { font-size:12px; color:#6b7280; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
-  display:inline-block; min-width:6ch; flex-shrink:0; text-align:right; }
-.wavep-chip-delta { font-size:11px; color:#3563c2; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
-  display:inline-block; min-width:6ch; flex-shrink:0; text-align:right; }
-/* 没有游标差值时不占 6ch，固定宽度下把空间让给通道名 */
+  flex:0 0 auto; min-width:6ch; text-align:right; }
+.wavep-chip-delta { font-size:10px; color:#3563c2; font-family:Consolas,monospace; font-variant-numeric:tabular-nums;
+  flex:0 0 42px; width:42px; text-align:right; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+/* 没有游标差值时不占位，把空间让给通道名；
+   一旦某个通道出现差值，整排都预留差值列（.has-delta），数值列才不会左右跳动 */
 .wavep-chip-delta:empty { display:none; }
+.wavep-legend.has-delta .wavep-chip-delta:empty { display:inline-block; visibility:hidden; }
 .theme-dark .wavep-chip { background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px rgba(255,255,255,.09); }
 .theme-dark .wavep-chip:hover { background:rgba(108,167,232,.14); }
 .theme-dark .wavep-chip-name { color:#d6d9de; }
@@ -1432,14 +1723,41 @@ var mountWave = (el, ctx) => {
         <button type="button" class="wavep-btn wavep-freeze">冻结</button>
         <button type="button" class="wavep-btn wavep-follow" style="display:none">回到最新</button>
         <button type="button" class="wavep-btn wavep-cursorbtn">游标</button>
+        <button type="button" class="wavep-btn wavep-measurebtn">测量</button>
+        <button type="button" class="wavep-btn wavep-mathbtn">数学</button>
         <button type="button" class="wavep-btn wavep-clear">清空</button>
-        <button type="button" class="wavep-btn wavep-export">导出SVG</button>
-        <button type="button" class="wavep-btn wavep-export-protocol">导出协议文件</button>
-        <button type="button" class="wavep-btn wavep-export-loglib">导出日志库</button>
+        <div class="wavep-menuwrap">
+          <button type="button" class="wavep-btn wavep-export-menu" title="导出 SVG / CSV / 协议文件 / 日志库">导出 ▾</button>
+          <div class="wavep-menu" style="display:none">
+            <button type="button" class="wavep-menu-item" data-export="svg">SVG 矢量图</button>
+            <button type="button" class="wavep-menu-item" data-export="csv">CSV 数据（当前时间窗）</button>
+            <button type="button" class="wavep-menu-item" data-export="protocol">协议文件</button>
+            <button type="button" class="wavep-menu-item" data-export="loglib">日志库</button>
+          </div>
+        </div>
       </div>
       <div class="wavep-main">
-        <div class="wavep-wrap"><canvas class="wavep-canvas"></canvas></div>
-        <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
+        <div class="wavep-wrap">
+          <canvas class="wavep-canvas"></canvas>
+          <div class="wavep-vscroll" style="display:none" title="拖动浏览通道 / 点击跳转 / 滚轮滚动"><div class="wavep-vthumb"></div></div>
+          <div class="wavep-hud" style="display:none"></div>
+          <div class="wavep-measure" style="display:none"><div class="wavep-panel-head"><span>测量（当前时间窗）</span><button type="button" class="wavep-panel-close" data-close="measure" title="关闭">✕</button></div><div class="wavep-measure-body"></div></div>
+          <div class="wavep-math" style="display:none">
+            <div class="wavep-panel-head"><span>数学通道</span><button type="button" class="wavep-panel-close" data-close="math" title="关闭">✕</button></div>
+            <div class="wavep-math-bar">
+              <select class="wavep-select wavep-math-op">
+                <option value="diff">A − B（差分）</option>
+                <option value="avg">平滑平均（A）</option>
+                <option value="fft">FFT 频谱（A）</option>
+              </select>
+              <select class="wavep-select wavep-math-a"></select>
+              <select class="wavep-select wavep-math-b"></select>
+              <label class="wavep-math-n">阶数<input type="number" class="wavep-math-num" min="2" max="999" step="1" value="9" /></label>
+            </div>
+            <canvas class="wavep-math-canvas"></canvas>
+            <div class="wavep-math-foot"></div>
+          </div>
+        </div>
       </div>
       <canvas class="wavep-ovcanvas" title="拖动蓝框平移 / 拖边缩放 / 点击空白跳转"></canvas>
       <div class="wavep-legend"></div>
@@ -1457,9 +1775,8 @@ var mountWave = (el, ctx) => {
   const btnFollow = el.querySelector(".wavep-follow");
   const btnCursor = el.querySelector(".wavep-cursorbtn");
   const btnClear = el.querySelector(".wavep-clear");
-  const btnSvgExport = el.querySelector(".wavep-export");
-  const btnExport = el.querySelector(".wavep-export-protocol");
-  const btnLogLibExport = el.querySelector(".wavep-export-loglib");
+  const btnExportMenu = el.querySelector(".wavep-export-menu");
+  const exportMenu = el.querySelector(".wavep-menu");
   const legendEl = el.querySelector(".wavep-legend");
   const statsEl = el.querySelector(".wavep-stats");
   const windowEl = el.querySelector(".wavep-window");
@@ -1674,14 +1991,16 @@ var mountWave = (el, ctx) => {
     view.overlay = !view.overlay;
     view.yRanges.clear();
     view.paneScroll = 0;
+    setHover(null);
     updateButtons();
     markDirty();
   });
   const btnStyle = el.querySelector(".wavep-style");
   btnStyle.addEventListener("click", () => {
     const order = STYLE_ORDER;
-    view.style = order[(order.indexOf(view.style) + 1) % order.length];
-    btnStyle.textContent = view.style === "line" ? "曲线" : view.style === "dots" ? "点" : "峰谷";
+    const at = order.indexOf(view.style);
+    view.style = order[(at < 0 ? 0 : at + 1) % order.length];
+    btnStyle.textContent = STYLE_LABEL[view.style] ?? "曲线";
     persist();
     markDirty();
   });
@@ -1709,16 +2028,334 @@ var mountWave = (el, ctx) => {
   });
   btnClear.addEventListener("click", () => {
     engine.clear();
+    fpsFrames = 0;
+    fps = 0;
+    fpsMark = performance.now();
     markDirty();
   });
+  const hudEl = el.querySelector(".wavep-hud");
+  const measurePanel = el.querySelector(".wavep-measure");
+  const measureBody = el.querySelector(".wavep-measure-body");
+  const mathPanel = el.querySelector(".wavep-math");
+  const mathCanvas = el.querySelector(".wavep-math-canvas");
+  const mathOp = el.querySelector(".wavep-math-op");
+  const mathA = el.querySelector(".wavep-math-a");
+  const mathB = el.querySelector(".wavep-math-b");
+  const mathN = el.querySelector(".wavep-math-num");
+  const mathFoot = el.querySelector(".wavep-math-foot");
+  const btnMeasure = el.querySelector(".wavep-measurebtn");
+  const btnMath = el.querySelector(".wavep-mathbtn");
+  const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const visibleChannels = () => engine.channels.map((_, i) => i).filter((i) => engine.visible[i] !== false);
+  let measureOpen = false;
+  let mathOpen = false;
+  let lastPointer = null;
+  const windowRange = () => {
+    if (engine.t.count < 2 || !(geom.t1 > geom.t0)) return null;
+    const i0 = Math.max(0, engine.lowerBound(geom.t0));
+    const i1 = Math.min(engine.t.count, Math.max(i0 + 1, engine.lowerBound(geom.t1) + 1));
+    return i1 - i0 >= 2 ? { i0, i1 } : null;
+  };
+  const timeText = (t) => {
+    const epoch = t + (Date.now() - performance.now());
+    const d = new Date(epoch);
+    const p = (n, w = 2) => String(n).padStart(w, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  };
+  const relativeText = (t) => {
+    const first = engine.t.count > 0 ? engine.t.at(0) : t;
+    return `+${((t - first) / 1e3).toFixed(3)} s`;
+  };
+  const updateHud = () => {
+    if (view.hoverT === null || !lastPointer || engine.t.count === 0) {
+      hudEl.style.display = "none";
+      return;
+    }
+    const idx = engine.nearestIndex(view.hoverT);
+    if (idx < 0) {
+      hudEl.style.display = "none";
+      return;
+    }
+    const palette = buildColors().palette;
+    const focus = view.hoverCh;
+    const chs = focus !== null && !view.overlay ? [focus] : visibleChannels().slice(0, 8);
+    let dtLine = "";
+    if (view.cursorA !== null && view.cursorB !== null) {
+      const dt = Math.abs(view.cursorB - view.cursorA);
+      if (dt > 0) {
+        const hz = 1e3 / dt;
+        const hzText = hz >= 100 ? hz.toFixed(0) : hz >= 1 ? hz.toFixed(1) : hz.toFixed(2);
+        dtLine = `<div class="wavep-hud-dt">Δt ${fmtDuration(dt)} · ${hzText} Hz</div>`;
+      }
+    }
+    const rows = chs.map((ch) => {
+      const color = palette[ch % palette.length];
+      const name = engine.names[ch] ?? `CH${ch + 1}`;
+      return `<div class="wavep-hud-row"><span><i style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:5px"></i><b>${escapeHtml(name)}</b></span><span>${fmtValue(engine.channels[ch].at(idx))}</span></div>`;
+    }).join("");
+    hudEl.innerHTML = `<div class="wavep-hud-time">${timeText(engine.t.at(idx))}<span class="wavep-hud-el">${relativeText(engine.t.at(idx))}</span></div>${dtLine}${rows}`;
+    hudEl.style.display = "";
+    const wr = wrap.getBoundingClientRect();
+    const scale = wr.width / (wrap.offsetWidth || 1) || 1;
+    const px = (lastPointer.x - wr.left) / scale;
+    const py = (lastPointer.y - wr.top) / scale;
+    const w = hudEl.offsetWidth;
+    const h = hudEl.offsetHeight;
+    const WW = wrap.offsetWidth;
+    const WH = wrap.offsetHeight;
+    const gap = 14 / scale;
+    const cands = [
+      { x: px + gap, y: py + gap },
+      // 右下（默认）
+      { x: px - gap - w, y: py + gap },
+      // 左下
+      { x: px + gap, y: py - gap - h },
+      // 右上
+      { x: px - gap - w, y: py - gap - h }
+      // 左上
+    ];
+    const fits = (c) => c.x >= 6 && c.y >= 6 && c.x + w <= WW - 6 && c.y + h <= WH - 6;
+    let pos = cands.find(fits);
+    if (!pos) {
+      pos = { x: px < WW / 2 ? WW - w - 6 : 6, y: py < WH / 2 ? WH - h - 6 : 6 };
+      const covers = px >= pos.x - 4 && px <= pos.x + w + 4 && py >= pos.y - 4 && py <= pos.y + h + 4;
+      if (covers) {
+        pos.x = px < WW / 2 ? Math.max(6, Math.min(WW - w - 6, px + 24)) : Math.min(WW - w - 6, Math.max(6, px - w - 24));
+      }
+    }
+    hudEl.style.left = `${Math.round(pos.x)}px`;
+    hudEl.style.top = `${Math.round(pos.y)}px`;
+  };
+  const renderMeasure = () => {
+    if (!measureOpen) return;
+    const r = windowRange();
+    const chs = visibleChannels();
+    if (!r || chs.length === 0) {
+      measureBody.innerHTML = '<div class="wavep-measure-row head"><span>通道</span><span colspan="3">当前时间窗内无数据</span></div>';
+      return;
+    }
+    const palette = buildColors().palette;
+    const head = `<div class="wavep-measure-row head"><span>通道</span><span>当前</span><span>Vpp</span><span>RMS</span><span>频率</span></div>`;
+    const rows = chs.slice(0, 24).map((ch) => {
+      const s = channelStats(engine, ch, r.i0, r.i1);
+      const cur = engine.channels[ch].at(r.i1 - 1);
+      const color = palette[ch % palette.length];
+      const name = engine.names[ch] ?? `CH${ch + 1}`;
+      return `<div class="wavep-measure-row" title="${escapeHtml(name)}：Vpp ${fmtValue(s.vpp)} / RMS ${fmtValue(s.rms)} / 均值 ${fmtValue(s.mean)}"><span style="color:${color};overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}</span><span>${fmtValue(cur)}</span><span>${fmtValue(s.vpp)}</span><span>${fmtValue(s.rms)}</span><span>${s.freq !== null ? s.freq.toFixed(1) + " Hz" : "—"}</span></div>`;
+    }).join("");
+    measureBody.innerHTML = head + rows;
+  };
+  let mathCfg = ctx.storage.get("wave.math", { op: "diff", a: 0, b: 1, n: 9 });
+  if (!mathCfg || typeof mathCfg !== "object") mathCfg = { op: "diff", a: 0, b: 1, n: 9 };
+  const saveMathCfg = () => {
+    mathCfg = {
+      op: ["diff", "avg", "fft"].includes(mathOp.value) ? mathOp.value : "diff",
+      a: Number(mathA.value) || 0,
+      b: Number(mathB.value) || 0,
+      n: Math.min(999, Math.max(2, Number(mathN.value) || 9))
+    };
+    ctx.storage.set("wave.math", mathCfg);
+    renderMath();
+  };
+  const syncMathSelectors = () => {
+    const opts = engine.channels.map((_, i) => `<option value="${i}">${escapeHtml(engine.names[i] ?? `CH${i + 1}`)}</option>`).join("");
+    if (mathA.dataset.count !== String(engine.channels.length)) {
+      mathA.innerHTML = opts;
+      mathB.innerHTML = opts;
+      mathA.dataset.count = String(engine.channels.length);
+    }
+    mathA.value = String(Math.min(mathCfg.a, Math.max(0, engine.channels.length - 1)));
+    mathB.value = String(Math.min(mathCfg.b, Math.max(0, engine.channels.length - 1)));
+    mathOp.value = mathCfg.op;
+    mathN.value = String(mathCfg.n);
+    const isFft = mathCfg.op === "fft";
+    const isAvg = mathCfg.op === "avg";
+    mathB.style.display = mathCfg.op === "diff" ? "" : "none";
+    mathN.parentElement.style.display = isAvg ? "" : "none";
+    void isFft;
+  };
+  const drawMathCanvas = (values, spectrum, unit) => {
+    const dpr = (window.devicePixelRatio || 1) * (Number(document.documentElement.style.zoom) || 1);
+    const cssW = mathCanvas.clientWidth || 240;
+    const cssH = mathCanvas.clientHeight || 110;
+    const W = Math.round(cssW * dpr);
+    const H = Math.round(cssH * dpr);
+    if (mathCanvas.width !== W || mathCanvas.height !== H) {
+      mathCanvas.width = W;
+      mathCanvas.height = H;
+    }
+    const g = mathCanvas.getContext("2d");
+    if (!g) return;
+    const colors = buildColors();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, cssW, cssH);
+    g.fillStyle = colors.bg;
+    g.fillRect(0, 0, cssW, cssH);
+    const L = 34;
+    const R = 6;
+    const T = 6;
+    const B = 14;
+    const pw = Math.max(1, cssW - L - R);
+    const ph = Math.max(1, cssH - T - B);
+    g.strokeStyle = colors.grid;
+    g.lineWidth = 1;
+    g.strokeRect(L, T, pw, ph);
+    if (spectrum) {
+      let maxMag = 0;
+      for (let k = 1; k < spectrum.mags.length; k++) maxMag = Math.max(maxMag, spectrum.mags[k]);
+      if (!(maxMag > 0)) return;
+      g.fillStyle = colors.accent;
+      const bins = spectrum.mags.length - 1;
+      for (let k = 1; k < spectrum.mags.length; k++) {
+        const x = L + k / bins * pw;
+        const h = spectrum.mags[k] / maxMag * ph;
+        g.fillRect(x, T + ph - h, Math.max(1, pw / bins - 0.5), h);
+      }
+      g.fillStyle = colors.textDim;
+      g.font = "9px Consolas, monospace";
+      g.textAlign = "left";
+      g.textBaseline = "top";
+      g.fillText("0 Hz", L, T + ph + 3);
+      g.textAlign = "right";
+      g.fillText(`${(spectrum.fsEff / 2).toFixed(0)} Hz`, L + pw, T + ph + 3);
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText(maxMag.toPrecision(2), 2, T + 6);
+      return;
+    }
+    if (!values || values.length < 2) return;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const v of values) {
+      if (!Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+    const yOf = (v) => T + ph - (v - min) / (max - min) * ph;
+    g.strokeStyle = colors.accent;
+    g.lineWidth = 1.6;
+    g.beginPath();
+    const stride = Math.max(1, Math.ceil(values.length / (pw * 2)));
+    for (let i = 0; i < values.length; i += stride) {
+      const x = L + i / (values.length - 1) * pw;
+      const y = yOf(values[i]);
+      if (i === 0) g.moveTo(x, y);
+      else g.lineTo(x, y);
+    }
+    g.stroke();
+    g.fillStyle = colors.textDim;
+    g.font = "9px Consolas, monospace";
+    g.textAlign = "left";
+    g.textBaseline = "middle";
+    g.fillText(fmtValue(max), 2, T + 5);
+    g.fillText(fmtValue(min), 2, T + ph - 5);
+    g.textBaseline = "top";
+    g.fillText(unit, L, T + ph + 3);
+  };
+  const renderMath = () => {
+    if (!mathOpen) return;
+    syncMathSelectors();
+    const r = windowRange();
+    if (!r || engine.channels.length === 0) {
+      drawMathCanvas(null, null, "");
+      mathFoot.textContent = "当前时间窗内无数据";
+      return;
+    }
+    const aName = engine.names[mathCfg.a] ?? `CH${mathCfg.a + 1}`;
+    if (mathCfg.op === "fft") {
+      const spec = fftSpectrum(engine, mathCfg.a, r.i0, r.i1);
+      drawMathCanvas(null, spec, "");
+      if (spec) {
+        let pk = 1;
+        for (let k = 2; k < spec.mags.length; k++) if (spec.mags[k] > spec.mags[pk]) pk = k;
+        const pkHz = spec.freqs[pk];
+        const zero = channelStats(engine, mathCfg.a, r.i0, r.i1).freq;
+        mathFoot.textContent = `${aName} 采样≈${spec.sampleHz.toFixed(1)} Hz · ${spec.nfft} 点 FFT · 分辨率 ${(spec.fsEff / spec.nfft).toFixed(2)} Hz · 谱峰 ${pkHz.toFixed(2)} Hz` + (zero ? ` · 过零 ${zero.toFixed(2)} Hz` : "");
+      } else {
+        mathFoot.textContent = `${aName} 样本不足，无法做 FFT`;
+      }
+      return;
+    }
+    const av = sliceChannel(engine, mathCfg.a, r.i0, r.i1);
+    if (mathCfg.op === "diff") {
+      const bv = sliceChannel(engine, mathCfg.b, r.i0, r.i1);
+      const out = new Float32Array(Math.min(av.length, bv.length));
+      for (let i = 0; i < out.length; i++) out[i] = av[i] - bv[i];
+      drawMathCanvas(out, null, `${aName} − ${engine.names[mathCfg.b] ?? `CH${mathCfg.b + 1}`}`);
+      mathFoot.textContent = `差分 ${out.length} 点（当前时间窗）`;
+    } else {
+      const out = movingAverage(av, mathCfg.n);
+      drawMathCanvas(out, null, `${aName} 平滑 N=${mathCfg.n}`);
+      mathFoot.textContent = `滑动平均 N=${mathCfg.n} · ${out.length} 点`;
+    }
+  };
+  const setMeasureOpen = (on) => {
+    if (on && mathOpen) setMathOpen(false);
+    measureOpen = on;
+    measurePanel.style.display = on ? "" : "none";
+    btnMeasure.classList.toggle("active", on);
+    if (on) renderMeasure();
+  };
+  const setMathOpen = (on) => {
+    if (on && measureOpen) {
+      measureOpen = false;
+      measurePanel.style.display = "none";
+      btnMeasure.classList.remove("active");
+    }
+    mathOpen = on;
+    mathPanel.style.display = on ? "" : "none";
+    btnMath.classList.toggle("active", on);
+    if (on) renderMath();
+  };
+  btnMeasure.addEventListener("click", () => setMeasureOpen(!measureOpen));
+  btnMath.addEventListener("click", () => setMathOpen(!mathOpen));
+  for (const btn of el.querySelectorAll(".wavep-panel-close")) {
+    btn.addEventListener("click", () => {
+      const which = btn.dataset.close;
+      if (which === "measure") setMeasureOpen(false);
+      if (which === "math") setMathOpen(false);
+    });
+  }
+  mathOp.addEventListener("change", saveMathCfg);
+  mathA.addEventListener("change", saveMathCfg);
+  mathB.addEventListener("change", saveMathCfg);
+  mathN.addEventListener("change", saveMathCfg);
+  const exportCsv = () => {
+    const r = windowRange();
+    const cols = visibleChannels();
+    if (!r || cols.length === 0) {
+      ctx.notify("当前没有可导出的波形数据");
+      return;
+    }
+    if (!ctx.exportTextFiles) {
+      ctx.notify("当前应用版本过旧，不支持文件导出");
+      return;
+    }
+    const csv = buildCsv(engine, engine.names, cols, r.i0, r.i1, 2e5);
+    if (!csv) {
+      ctx.notify("当前没有可导出的波形数据");
+      return;
+    }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    void ctx.exportTextFiles("选择 CSV 导出目录", [{ name: `wave-${stamp}.csv`, text: csv }], "wave-csv").then((dir) => ctx.notify(dir ? `CSV 已导出到 ${dir}（${r.i1 - r.i0} 点 × ${cols.length} 通道）` : "CSV 导出已取消")).catch(() => ctx.notify("CSV 导出失败"));
+  };
   const exportProtocol = () => {
     void (async () => {
       if (!ctx.exportTextFiles) {
         ctx.notify("当前应用版本过旧，不支持文件导出");
         return;
       }
-      const dir = await ctx.exportTextFiles("选择协议文件导出目录", FIRMWARE_FILES, "NN-Wave协议文件");
-      if (dir) ctx.notify(`协议文件已导出到 ${dir} 的 NN-Wave协议文件 子目录`);
+      try {
+        const dir = await ctx.exportTextFiles("选择协议文件导出目录", FIRMWARE_FILES, "nnwave-protocol");
+        ctx.notify(dir ? `协议文件已导出到 ${dir} 下的 nnwave-protocol 子目录` : "已取消导出");
+      } catch (e) {
+        ctx.notify("协议文件导出失败：" + (e instanceof Error ? e.message : String(e)));
+      }
     })();
   };
   const exportSvg = () => {
@@ -1733,8 +2370,12 @@ var mountWave = (el, ctx) => {
         return;
       }
       const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:T]/g, "-").slice(0, 19);
-      const dir = await ctx.exportTextFiles("选择SVG导出目录", [{ name: `wave-${stamp}.svg`, text: svg }], "NN-Wave波形快照");
-      if (dir) ctx.notify(`波形 SVG 已导出到 ${dir} 的 NN-Wave波形快照 子目录`);
+      try {
+        const dir = await ctx.exportTextFiles("选择SVG导出目录", [{ name: `wave-${stamp}.svg`, text: svg }], "wave-svg");
+        ctx.notify(dir ? `波形 SVG 已导出到 ${dir} 下的 wave-svg 子目录` : "已取消导出");
+      } catch (e) {
+        ctx.notify("SVG 导出失败：" + (e instanceof Error ? e.message : String(e)));
+      }
     })();
   };
   const exportLogLib = () => {
@@ -1743,13 +2384,34 @@ var mountWave = (el, ctx) => {
         ctx.notify("当前应用版本过旧，不支持文件导出");
         return;
       }
-      const dir = await ctx.exportTextFiles("选择日志库导出目录", NNPRINTF_FILES, "NNPrintf日志库");
-      if (dir) ctx.notify(`NNPrintf.h 已导出到 ${dir} 的 NNPrintf日志库 子目录`);
+      try {
+        const dir = await ctx.exportTextFiles("选择日志库导出目录", NNPRINTF_FILES, "nnprintf-log");
+        ctx.notify(dir ? `NNPrintf.h 已导出到 ${dir} 下的 nnprintf-log 子目录` : "已取消导出");
+      } catch (e) {
+        ctx.notify("日志库导出失败：" + (e instanceof Error ? e.message : String(e)));
+      }
     })();
   };
-  btnSvgExport.addEventListener("click", exportSvg);
-  btnExport.addEventListener("click", exportProtocol);
-  btnLogLibExport.addEventListener("click", exportLogLib);
+  const closeExportMenu = () => {
+    exportMenu.style.display = "none";
+  };
+  btnExportMenu.addEventListener("click", (e) => {
+    e.stopPropagation();
+    exportMenu.style.display = exportMenu.style.display === "none" ? "" : "none";
+  });
+  exportMenu.addEventListener("click", (e) => {
+    const item = e.target.closest(".wavep-menu-item");
+    if (!item) return;
+    closeExportMenu();
+    const kind = item.dataset.export;
+    if (kind === "svg") exportSvg();
+    else if (kind === "csv") exportCsv();
+    else if (kind === "protocol") exportProtocol();
+    else if (kind === "loglib") exportLogLib();
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!exportMenu.contains(e.target) && e.target !== btnExportMenu) closeExportMenu();
+  });
   const pointerPos = (e) => {
     const rect = canvas.getBoundingClientRect();
     const scale = rect.width / (canvas.clientWidth || 1);
@@ -1821,8 +2483,8 @@ var mountWave = (el, ctx) => {
         return;
       }
       const newWindow = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, view.windowMs * factor));
-      view.windowMs = newWindow;
       const tAt = timeAtX(x);
+      view.windowMs = newWindow;
       const rightEdge = geom.plotLeft + geom.plotWidth;
       const newRightT = tAt + (rightEdge - x) / geom.plotWidth * newWindow;
       const firstT = engine.t.count > 0 ? engine.t.at(0) : 0;
@@ -1857,6 +2519,24 @@ var mountWave = (el, ctx) => {
     }
   });
   canvas.addEventListener("pointermove", (e) => {
+    {
+      const p = pointerPos(e);
+      const inside = inPlot(p.x) && p.y >= geom.viewport.top && p.y <= geom.viewport.top + geom.viewport.height;
+      if (inside) {
+        view.hoverT = Math.min(geom.t1, Math.max(geom.t0, timeAtX(p.x)));
+        lastPointer = { x: e.clientX, y: e.clientY };
+        if (!drag) updateHud();
+        markDirty();
+      } else if (view.hoverT !== null) {
+        view.hoverT = null;
+        hudEl.style.display = "none";
+        markDirty();
+      }
+      if (!drag && !view.overlay) {
+        const pane = geom.panes.find((q) => p.y >= q.top && p.y < q.top + q.height);
+        setHover(pane ? pane.ch : null);
+      }
+    }
     if (!drag) return;
     const { x, y } = pointerPos(e);
     if (drag.kind === "pan") {
@@ -2035,6 +2715,13 @@ var mountWave = (el, ctx) => {
     },
     { passive: false }
   );
+  canvas.addEventListener("pointerleave", () => {
+    lastPointer = null;
+    view.hoverT = null;
+    setHover(null);
+    hudEl.style.display = "none";
+    markDirty();
+  });
   canvas.addEventListener("dblclick", () => {
     view.follow = true;
     view.frozen = false;
@@ -2071,9 +2758,10 @@ var mountWave = (el, ctx) => {
       return;
     }
     legendEl.innerHTML = engine.channels.map(
-      (_, i) => `<span class="wavep-chip" data-index="${i}" title="点击色块换色 / 双击恢复默认；点击其余区域隐藏或显示"><i class="wavep-dot"></i><span class="wavep-chip-name"></span><span class="wavep-chip-val"></span><span class="wavep-chip-delta"></span></span>`
+      (_, i) => `<span class="wavep-chip" data-index="${i}" title="点击色块换色 / 双击恢复默认；点击其余区域隐藏或显示"><span class="wavep-chip-top"><i class="wavep-dot"></i><span class="wavep-chip-name"></span></span><span class="wavep-chip-bottom"><span class="wavep-chip-val"></span><span class="wavep-chip-delta"></span></span></span>`
     ).join("");
     legendChipCount = engine.channels.length;
+    legendEl.classList.toggle("dense", engine.channels.length > 12);
   };
   const updateLegend = () => {
     if (engine.channels.length !== legendChipCount) rebuildLegendStructure();
@@ -2081,6 +2769,8 @@ var mountWave = (el, ctx) => {
     const palette = buildColors().palette;
     const va = view.cursorA !== null ? engine.nearestIndex(view.cursorA) : -1;
     const vb = view.cursorB !== null ? engine.nearestIndex(view.cursorB) : -1;
+    const hasDelta = view.cursorA !== null && view.cursorB !== null;
+    legendEl.classList.toggle("has-delta", hasDelta);
     for (let i = 0; i < engine.channels.length; i++) {
       const chip = legendEl.querySelector(`.wavep-chip[data-index="${i}"]`);
       if (!chip) continue;
@@ -2095,9 +2785,32 @@ var mountWave = (el, ctx) => {
       chip.querySelector(".wavep-dot").style.background = color;
       chip.querySelector(".wavep-chip-name").textContent = engine.names[i] ?? `CH${i + 1}`;
       chip.querySelector(".wavep-chip-val").textContent = fmtValue(value);
-      chip.querySelector(".wavep-chip-delta").textContent = delta ? "Δ " + delta : "";
+      const deltaEl = chip.querySelector(".wavep-chip-delta");
+      deltaEl.textContent = delta;
+      deltaEl.title = delta ? `游标差值 Δ ${delta}` : "";
     }
   };
+  const setHover = (index) => {
+    if (view.hoverCh === index) return;
+    view.hoverCh = index;
+    legendEl.classList.toggle("hovering", index !== null);
+    for (const chip of legendEl.querySelectorAll(".wavep-chip")) {
+      chip.classList.toggle("hot", index !== null && Number(chip.dataset.index) === index);
+    }
+    markDirty();
+  };
+  legendEl.addEventListener("pointerover", (e) => {
+    const chip = e.target.closest(".wavep-chip");
+    if (chip) setHover(Number(chip.dataset.index));
+  });
+  legendEl.addEventListener("pointerout", (e) => {
+    const chip = e.target.closest(".wavep-chip");
+    if (!chip) return;
+    const to = e.relatedTarget;
+    if (to && chip.contains(to)) return;
+    setHover(null);
+  });
+  legendEl.addEventListener("pointerleave", () => setHover(null));
   legendEl.addEventListener("click", (e) => {
     const target = e.target;
     const chip = target.closest(".wavep-chip");
@@ -2125,7 +2838,10 @@ var mountWave = (el, ctx) => {
   });
   const renderStatus = () => {
     const s = engine.stats;
-    statsEl.textContent = `帧率 ${fps}/s · 帧 ${s.frames} · 丢帧 ${s.drops} · 解析错误 ${s.errors} · 字节 ${s.bytes}`;
+    const total = engine.channels.length;
+    const shown = engine.visible.reduce((n, v) => n + (v === false ? 0 : 1), 0);
+    const deltaHint = view.cursorA !== null && view.cursorB !== null ? " · 蓝色数字 = 游标 A→B 差值" : "";
+    statsEl.textContent = `帧率 ${fps}/s · 帧 ${s.frames} · 丢帧 ${s.drops} · 解析错误 ${s.errors} · 字节 ${s.bytes} · 通道 ${total}${shown !== total ? `（显示 ${shown}）` : ""}${deltaHint}`;
     windowEl.textContent = `时间窗 ${fmtDuration(view.windowMs)}`;
   };
   let rafId = 0;
@@ -2198,7 +2914,7 @@ var mountWave = (el, ctx) => {
   const loop = (now) => {
     draw();
     if (now - fpsMark >= 1e3) {
-      fps = engine.stats.frames - fpsFrames;
+      fps = Math.max(0, engine.stats.frames - fpsFrames);
       fpsFrames = engine.stats.frames;
       fpsMark = now;
     }
@@ -2206,6 +2922,9 @@ var mountWave = (el, ctx) => {
       uiMark = now;
       updateLegend();
       renderStatus();
+      if (measureOpen) renderMeasure();
+      if (mathOpen) renderMath();
+      if (view.hoverT !== null) updateHud();
     }
     rafId = requestAnimationFrame(loop);
   };
@@ -2227,6 +2946,7 @@ var mountWave = (el, ctx) => {
         }
       }
       updateButtons();
+      btnStyle.textContent = STYLE_LABEL[view.style] ?? "曲线";
     } catch {
     }
   };

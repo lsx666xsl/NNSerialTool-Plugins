@@ -6,6 +6,7 @@
   "description": "NNSerialTool 插件仓库：插件源码 + 市场索引 + 打包 CI",
   "scripts": {
     "build": "node scripts/build-plugins.mjs",
+    "pack": "node scripts/pack-plugins.mjs --clean",
     "check": "node scripts/build-index.mjs --check",
     "test:wave": "node scripts/wave-headless-test.mjs"
   },

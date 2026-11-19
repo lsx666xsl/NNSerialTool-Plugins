@@ -22,6 +22,8 @@ export interface ViewState {
   cursorA: number | null; // 游标时间（ms）
   cursorB: number | null;
   paneScroll: number; // 分栏纵向滚动偏移（px），溢出时 >0
+  hoverCh: number | null; // 鼠标悬停的通道（高亮该通道曲线、压暗其余；null=无悬停）
+  hoverT: number | null; // 鼠标所在时间（画十字线 + HUD 读数）；null=鼠标不在图上
 }
 
 export const defaultViewState = (): ViewState => ({
@@ -35,6 +37,8 @@ export const defaultViewState = (): ViewState => ({
   cursorA: null,
   cursorB: null,
   paneScroll: 0,
+  hoverCh: null,
+  hoverT: null,
 });
 
 export const MIN_WINDOW = 100;
@@ -291,7 +295,27 @@ export const drawWave = (
     g.clip();
 
     const cols = Math.max(1, Math.floor(plotW));
-    for (const ch of channels) {
+    // 悬停高亮：把该栏淡色底 + 左侧色条画在曲线之下，让人一眼看出“正在看哪一栏”
+    if (view.hoverCh !== null && !view.overlay && pane.ch === view.hoverCh) {
+      const hc = colors.palette[pane.ch % colors.palette.length];
+      const top = Math.max(plotTop, pane.top);
+      const h = Math.max(0, Math.min(pane.height, plotBottom - pane.top) - (top - pane.top));
+      g.save();
+      g.globalAlpha = 0.08;
+      g.fillStyle = hc;
+      g.fillRect(plotLeft, top, plotW, h);
+      g.globalAlpha = 0.9;
+      g.fillRect(plotLeft, top + 2, 3, Math.max(0, h - 4));
+      g.restore();
+    }
+    // 悬停通道最后画（压在最上层），其余通道降透明度——曲线交叉时也能看清目标那条
+    const hover = view.hoverCh;
+    const drawOrder =
+      hover !== null && channels.includes(hover) ? [...channels.filter((c) => c !== hover), hover] : channels;
+    for (const ch of drawOrder) {
+      const dimmed = hover !== null && ch !== hover;
+      const emphasized = hover !== null && ch === hover;
+      g.globalAlpha = dimmed ? 0.22 : 1;
       const range = view.overlay && paneRange ? paneRange : yRangeOf(ch);
       const yOf = (v: number) => pane.top + pane.height - ((v - range.min) / (range.max - range.min)) * pane.height;
       const color = colors.palette[ch % colors.palette.length];
@@ -316,7 +340,7 @@ export const drawWave = (
         }
         g.beginPath();
         g.strokeStyle = color;
-        g.lineWidth = 1.25;
+        g.lineWidth = emphasized ? 2 : 1.25;
         let started = false;
         let lastX = -1;
         for (let col = 0; col < cols; col++) {
@@ -340,22 +364,28 @@ export const drawWave = (
         // X=时间轴（引擎已把时间戳错开为严格递增，平移/缩放语义正确）
         g.fillStyle = color;
         const total = i1 - i0;
-        const stride = total > 8000 ? Math.ceil(total / 8000) : 1;
+        // 抽点预算按“本帧所有通道”摊分：叠加模式 64 条曲线各自 8000 点时单帧要画 50 万点，
+        // 栅格化会掉到 15fps（实测）。按通道数摊分后总点数可控。
+        const dotBudget = Math.max(300, Math.floor(8000 / Math.max(1, channels.length)));
+        const stride = total > dotBudget ? Math.ceil(total / dotBudget) : 1;
         for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
           if (t < t0 || t > t1) continue;
           const x = plotLeft + ((t - t0) / view.windowMs) * plotW;
           const y = yOf(engine.channels[ch].at(i));
-          g.fillRect(x - 1.5, y - 1.5, 3, 3);
+          const half = emphasized ? 2 : 1.5;
+          g.fillRect(x - half, y - half, half * 2, half * 2);
         }
       } else {
         // 曲线：X=时间轴（与平移/缩放/时间窗语义一致），中点二次插值平滑，
         // 超 2 万可见点按步长抽点保流畅。引擎层已把批量时间戳错开为严格递增，
         // 到达抖动在秒级窗口内不可见。
         g.strokeStyle = color;
-        g.lineWidth = 1.6;
+        g.lineWidth = emphasized ? 2.6 : 1.6;
         const total = i1 - i0;
-        const stride = total > 20_000 ? Math.ceil(total / 20_000) : 1;
+        // 同上：叠加模式按通道数摊分点数预算（64 通道时每通道约 300 点，单帧总点数仍可控）
+        const lineBudget = Math.max(300, Math.floor(20_000 / Math.max(1, channels.length)));
+        const stride = total > lineBudget ? Math.ceil(total / lineBudget) : 1;
         const pts: Array<[number, number]> = [];
         for (let i = i0; i < i1; i += stride) {
           const t = engine.t.at(i);
@@ -379,6 +409,9 @@ export const drawWave = (
         g.stroke();
       }
     }
+
+    // 通道绘制结束：恢复不透明度（内部为压暗其它通道改过 globalAlpha）
+    g.globalAlpha = 1;
 
     // 分栏标题头：左上角显示通道名（随栏滚动，滚出视口即被裁剪）
     if (!view.overlay) {
@@ -433,6 +466,44 @@ export const drawWave = (
     g.lineTo(x + 0.5, plotBottom);
     g.stroke();
     g.setLineDash([]);
+  }
+
+  // 鼠标十字线（滑过时显示读数用；虚线比游标更淡，避免和游标混淆）
+  if (view.hoverT !== null && view.hoverT >= t0 && view.hoverT <= t1) {
+    const x = px(view.hoverT);
+    g.save();
+    g.globalAlpha = 0.5;
+    g.strokeStyle = colors.textDim;
+    g.setLineDash([2, 3]);
+    g.beginPath();
+    g.moveTo(x + 0.5, plotTop);
+    g.lineTo(x + 0.5, plotBottom);
+    g.stroke();
+    g.restore();
+  }
+
+  // 双游标时间差标注（示波器习惯：Δt 与 1/Δt）
+  if (view.cursorA !== null && view.cursorB !== null) {
+    const dt = Math.abs(view.cursorB - view.cursorA);
+    if (dt > 0) {
+      const hz = 1000 / dt;
+      const hzText = hz >= 100 ? hz.toFixed(0) : hz >= 1 ? hz.toFixed(1) : hz.toFixed(2);
+      const label = `Δt ${fmtDuration(dt)} · ${hzText} Hz`;
+      g.save();
+      g.font = '600 11px Consolas, monospace';
+      g.textAlign = 'left';
+      g.textBaseline = 'middle';
+      const w = g.measureText(label).width + 14;
+      g.globalAlpha = 0.92;
+      g.fillStyle = colors.panel;
+      g.fillRect(plotLeft + 4, plotTop + 4, w, 18);
+      g.globalAlpha = 1;
+      g.strokeStyle = colors.accent;
+      g.strokeRect(plotLeft + 4.5, plotTop + 4.5, w - 1, 17);
+      g.fillStyle = colors.accent;
+      g.fillText(label, plotLeft + 11, plotTop + 13);
+      g.restore();
+    }
   }
 
   return geom;

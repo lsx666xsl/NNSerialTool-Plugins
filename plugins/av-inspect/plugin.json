@@ -1,0 +1,16 @@
+{
+  "id": "av-inspect",
+  "name": "音视频解析",
+  "version": "1.2.0",
+  "apiVersion": 1,
+  "type": "view",
+  "entry": "main.js",
+  "author": "NNSerialTool",
+  "description": "音视频码流分析：H.264/H.265 Annex-B、MJPEG、ADTS AAC、MPEG-TS、WAV；A/V 时间线 + 帧大小曲线 + 时长/码率/GOP/片类型/SEI/量化表概览",
+  "permissions": [],
+  "minAppVersion": "0.6.0"
+}
+
+
+
+
