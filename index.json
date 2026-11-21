@@ -1,19 +1,19 @@
 {
   "apiVersion": 1,
-  "updatedAt": "2026-11-19T01:59:50.222Z",
+  "updatedAt": "2026-11-21T10:33:33.547Z",
   "plugins": [
     {
       "id": "av-inspect",
       "name": "音视频解析",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "type": "view",
       "description": "音视频码流分析：H.264/H.265 Annex-B、MJPEG、ADTS AAC、MPEG-TS、WAV；A/V 时间线 + 帧大小曲线 + 时长/码率/GOP/片类型/SEI/量化表概览",
       "author": "NNSerialTool",
       "apiVersion": 1,
       "minAppVersion": "0.6.0",
-      "size": 20480,
-      "sha256": "f85f3922378789b819a81e8f66a67dc392665850a8af25ca8304179bac2eda0a",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/av-inspect-1.2.0.zip"
+      "size": 20506,
+      "sha256": "6b8dbb6d47939333c9ed1ea04b8459a2d6e135d4ef9e99ce1e9c3f945807415f",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@c3babb07e901acd200c0dfce954882b5fe8955a8/packages/av-inspect-1.2.1.zip"
     },
     {
       "id": "hello-view",
@@ -24,8 +24,8 @@
       "author": "NNSerialTool",
       "apiVersion": 1,
       "size": 1476,
-      "sha256": "cf6d5852ec5dfe533d70b04ede68af62cf83bc860d040f33600b69b413f2ce15",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/hello-view-1.0.0.zip"
+      "sha256": "57758e30a7b748c8e5abded06d58028b50584b820246ab3b1e7fe75a6efd373d",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@c3babb07e901acd200c0dfce954882b5fe8955a8/packages/hello-view-1.0.0.zip"
     },
     {
       "id": "wave",
@@ -37,8 +37,8 @@
       "apiVersion": 1,
       "minAppVersion": "0.5.2",
       "size": 34670,
-      "sha256": "e1c53edc004ba796e3c4ec0fa74832d04f7c355aaa457f0274140d179866b723",
-      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@ab17d95563bdfd0e6e3b3004ea1bca03484463a4/packages/wave-1.18.0.zip"
+      "sha256": "b44ec01bc746def2c5a564c039e73433d7d19d0bcb83a4d192e65d5146657670",
+      "download": "https://cdn.jsdelivr.net/gh/lsx666xsl/NNSerialTool-Plugins@c3babb07e901acd200c0dfce954882b5fe8955a8/packages/wave-1.18.0.zip"
     }
   ]
 }
