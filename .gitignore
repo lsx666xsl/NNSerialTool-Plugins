@@ -9,3 +9,4 @@ node_modules/
 scripts/wave-headless-test.mjs
 scripts/smoke-wave.mjs
 scripts/svg-selftest.mjs
+.tmp-pack-result.json
