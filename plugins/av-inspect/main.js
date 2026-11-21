@@ -1093,7 +1093,9 @@ var STYLE = `
 .av-status { font-size:11px; color:#8a9099; display:flex; justify-content:space-between; gap:12px; }
 .av-empty { padding:28px; text-align:center; color:#8a9099; font-size:13px; }
 .theme-dark .av-root { color:#d6d9de; }
-.theme-dark .av-select, .theme-dark .av-btn, .theme-dark .av-card, .theme-dark .av-info,
+.theme-dark .av-select, .theme-dark .av-btn, .theme-dark .av-card, .theme-dark .av-info {
+  background: #2b2d30; border-color: rgba(255, 255, 255, 0.1); color: #d6d9de;
+}
 /* 原生滚动条 / 下拉列表跟随主题：深色下必须声明 color-scheme，否则 WebView2 会用浅色系统滚动条（白底 + 箭头） */
 .av-root { color-scheme: light; scrollbar-width: thin; scrollbar-color: rgba(128,132,140,.45) transparent; }
 .theme-dark .av-root { color-scheme: dark; }

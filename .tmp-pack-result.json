@@ -1,23 +1,23 @@
 [
   {
     "id": "av-inspect",
-    "version": "1.2.0",
-    "file": "av-inspect-1.2.0.zip",
-    "size": 20480,
-    "sha256": "f85f3922378789b819a81e8f66a67dc392665850a8af25ca8304179bac2eda0a"
+    "version": "1.2.1",
+    "file": "av-inspect-1.2.1.zip",
+    "size": 20506,
+    "sha256": "6b8dbb6d47939333c9ed1ea04b8459a2d6e135d4ef9e99ce1e9c3f945807415f"
   },
   {
     "id": "hello-view",
     "version": "1.0.0",
     "file": "hello-view-1.0.0.zip",
     "size": 1476,
-    "sha256": "cf6d5852ec5dfe533d70b04ede68af62cf83bc860d040f33600b69b413f2ce15"
+    "sha256": "57758e30a7b748c8e5abded06d58028b50584b820246ab3b1e7fe75a6efd373d"
   },
   {
     "id": "wave",
     "version": "1.18.0",
     "file": "wave-1.18.0.zip",
     "size": 34670,
-    "sha256": "e1c53edc004ba796e3c4ec0fa74832d04f7c355aaa457f0274140d179866b723"
+    "sha256": "b44ec01bc746def2c5a564c039e73433d7d19d0bcb83a4d192e65d5146657670"
   }
 ]
